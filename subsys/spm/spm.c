@@ -351,6 +351,7 @@ static void spm_config_peripherals(void)
 		/* There is no DTS node for the peripherals below,
 		 * so address them using nrfx macros directly.
 		 */
+		PERIPH("NRF_PDM", NRF_PDM_S, 1),
 		PERIPH("NRF_IPC", NRF_IPC_S, CONFIG_SPM_NRF_IPC_NS),
 		PERIPH("NRF_VMC", NRF_VMC_S, CONFIG_SPM_NRF_VMC_NS),
 		PERIPH("NRF_FPU", NRF_FPU_S, CONFIG_SPM_NRF_FPU_NS),
