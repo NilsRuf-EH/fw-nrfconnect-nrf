@@ -14,6 +14,8 @@
 #include <net/download_client.h>
 #include <logging/log.h>
 
+#include <libc_extensions.h>
+
 LOG_MODULE_REGISTER(download_client, CONFIG_DOWNLOAD_CLIENT_LOG_LEVEL);
 
 #define SIN6(A) ((struct sockaddr_in6 *)(A))
