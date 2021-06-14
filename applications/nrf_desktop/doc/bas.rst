@@ -1,24 +1,29 @@
-.. _bas:
+.. _nrf_desktop_bas:
 
-GATT Battery Service
-####################
+GATT Battery Service module
+###########################
 
-Use the ``bas`` module to enable and define the GATT Battery Service, and notify the subscribers about the battery level changes.
+.. contents::
+   :local:
+   :depth: 2
 
-Module Events
+Use the GATT Battery Service module to enable and define the GATT Battery Service, and notify the subscribers about the battery level changes.
+
+Module events
 *************
 
-+---------------------+-------------------------+-------------+---------------+------------------+
-| Source Module       | Input Event             | This Module | Output Event  | Sink Module      |
-+=====================+=========================+=============+===============+==================+
-| :ref:`battery_meas` | ``battery_level_event`` | ``bas``     |               |                  |
-+---------------------+-------------------------+-------------+---------------+------------------+
+.. include:: event_propagation.rst
+    :start-after: table_bas_start
+    :end-before: table_bas_end
+
+.. note::
+    |nrf_desktop_module_event_note|
 
 Configuration
 *************
 
-The module is enabled with the ``CONFIG_DESKTOP_BAS_ENABLE`` option.
-The option is selected by ``CONFIG_DESKTOP_HID_PERIPHERAL`` -- Battery Service is required for the HID peripheral device.
+The module is enabled with the :option:`CONFIG_DESKTOP_BAS_ENABLE` option.
+The option is selected by :option:`CONFIG_DESKTOP_HID_PERIPHERAL` -- Battery Service is required for the HID peripheral device.
 
 Implementation details
 **********************

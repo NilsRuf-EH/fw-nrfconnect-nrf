@@ -1,12 +1,11 @@
 #
 # Copyright (c) 2018 - 2019 Nordic Semiconductor
 #
-# SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
 #
 
-cmake_minimum_required(VERSION 3.8.2)
+cmake_minimum_required(VERSION 3.13.1)
 
-include($ENV{ZEPHYR_BASE}/../nrf/cmake/boilerplate.cmake)
 
 if (NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE ZDebug)
@@ -32,6 +31,9 @@ endif()
 set(mcuboot_CONF_FILE
   ${CMAKE_CURRENT_SOURCE_DIR}/configuration/${BOARD}/mcuboot_${CMAKE_BUILD_TYPE}.conf
   )
+set(b0_CONF_FILE
+  ${CMAKE_CURRENT_SOURCE_DIR}/configuration/${BOARD}/b0_${CMAKE_BUILD_TYPE}.conf
+  )
 
 # Use static partition layout to ensure consistency between builds.
 # This is to ensure settings storage will be at the same location after the DFU.
@@ -44,7 +46,7 @@ set(CONF_FILE "configuration/${BOARD}/app_${CMAKE_BUILD_TYPE}.conf")
 
 ################################################################################
 
-include($ENV{ZEPHYR_BASE}/cmake/app/boilerplate.cmake NO_POLICY_SCOPE)
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project("nRF52 Desktop"
         VERSION 0.1)
 
@@ -52,15 +54,20 @@ project("nRF52 Desktop"
 
 assert(CONFIG_DESKTOP_HID_REPORT_DESC "HID report descriptor file must be specified")
 
+# NORDIC SDK APP START
 target_sources(app PRIVATE
   src/main.c
   ${CONFIG_DESKTOP_HID_REPORT_DESC}
   )
+# NORDIC SDK APP END
 
 # Include application events and configuration headers
 zephyr_library_include_directories(
   src/events
   src/util
+  )
+
+zephyr_include_directories(
   configuration/common
   configuration/${BOARD}
   )
@@ -73,4 +80,7 @@ add_subdirectory(src/util)
 
 if(CONFIG_BOOTLOADER_MCUBOOT)
   assert_exists(mcuboot_CONF_FILE)
+endif()
+if(CONFIG_SECURE_BOOT)
+  assert_exists(b0_CONF_FILE)
 endif()

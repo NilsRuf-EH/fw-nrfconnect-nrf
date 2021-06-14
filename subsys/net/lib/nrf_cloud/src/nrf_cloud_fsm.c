@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2017 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 #include "nrf_cloud_fsm.h"
@@ -12,21 +12,6 @@
 #include <logging/log.h>
 
 LOG_MODULE_REGISTER(nrf_cloud_fsm, CONFIG_NRF_CLOUD_LOG_LEVEL);
-
-/**@brief Identifier for cloud state request.
- * Can be any unique unsigned 16-bit integer value except zero.
- */
-#define CLOUD_STATE_REQ_ID 5678
-
-/**@brief Identifier for message sent to report status in UA_COMPLETE state.
- * Can be any unique unsigned 16-bit integer value except zero.
- */
-#define PAIRING_STATUS_REPORT_ID 7890
-
-/**@brief Default message identifier.
- * Can be any unique unsigned 16-bit integer value except zero.
- */
-#define DEFAULT_REPORT_ID 1
 
 typedef int (*fsm_transition)(const struct nct_evt *nct_evt);
 
@@ -51,6 +36,7 @@ static const fsm_transition not_implemented_fsm_transition[NCT_EVT_TOTAL];
 
 static const fsm_transition initialized_fsm_transition[NCT_EVT_TOTAL] = {
 	[NCT_EVT_CONNECTED] = connection_handler,
+	[NCT_EVT_DISCONNECTED] = disconnection_handler,
 };
 
 static const fsm_transition connected_fsm_transition[NCT_EVT_TOTAL] = {
@@ -117,8 +103,11 @@ static const fsm_transition *state_event_handlers[] = {
 };
 BUILD_ASSERT(ARRAY_SIZE(state_event_handlers) == STATE_TOTAL);
 
+static bool persistent_session;
+
 int nfsm_init(void)
 {
+	persistent_session = false;
 	return 0;
 }
 
@@ -222,6 +211,8 @@ static int handle_device_config_update(const struct nct_evt *const evt,
 	}
 
 	cloud_evt.data = evt->param.cc->data;
+	cloud_evt.topic = evt->param.cc->topic;
+
 	nfsm_set_current_state_and_notify(nfsm_get_current_state(), &cloud_evt);
 
 	return err;
@@ -276,20 +267,32 @@ static int connection_handler(const struct nct_evt *nct_evt)
 	 */
 	if (nct_evt->status != 0) {
 		evt.type = NRF_CLOUD_EVT_ERROR;
-		nfsm_set_current_state_and_notify(STATE_CONNECTED, &evt);
+		evt.status = nct_evt->status;
+		nfsm_set_current_state_and_notify(nfsm_get_current_state(),
+						  &evt);
 		return 0;
 	}
 
 	evt.type = NRF_CLOUD_EVT_TRANSPORT_CONNECTED;
+	evt.status = nct_evt->param.flag;
 	nfsm_set_current_state_and_notify(STATE_CONNECTED, &evt);
 
 	/* Connect the control channel now. */
-	err = nct_cc_connect();
-	if (err) {
-		return err;
+	persistent_session = nct_evt->param.flag;
+	if (!persistent_session) {
+		err = nct_cc_connect();
+		if (err) {
+			return err;
+		}
+		nfsm_set_current_state_and_notify(STATE_CC_CONNECTING, NULL);
+	} else {
+		struct nct_evt nevt = { .type = NCT_EVT_CC_CONNECTED,
+					.status = 0 };
+
+		LOG_DBG("Previous session valid; skipping nct_cc_connect()");
+		nfsm_handle_incoming_event(&nevt, STATE_CC_CONNECTING);
 	}
 
-	nfsm_set_current_state_and_notify(STATE_CC_CONNECTING, NULL);
 
 	return 0;
 }
@@ -299,9 +302,14 @@ static int disconnection_handler(const struct nct_evt *nct_evt)
 	/* Set the state to INITIALIZED and notify the application of
 	 * disconnection.
 	 */
-	const struct nrf_cloud_evt evt = {
-		.type = NRF_CLOUD_EVT_TRANSPORT_DISCONNECTED
+	struct nrf_cloud_evt evt = {
+		.type = NRF_CLOUD_EVT_TRANSPORT_DISCONNECTED,
+		.status = NRF_CLOUD_DISCONNECT_CLOSED_BY_REMOTE,
 	};
+
+	if (nfsm_get_disconnect_requested()) {
+		evt.status = NRF_CLOUD_DISCONNECT_USER_REQUEST;
+	}
 
 	nfsm_set_current_state_and_notify(STATE_INITIALIZED, &evt);
 
@@ -421,12 +429,22 @@ static int cc_tx_ack_handler(const struct nct_evt *nct_evt)
 	}
 
 	if (nct_evt->param.data_id == PAIRING_STATUS_REPORT_ID) {
-		err = nct_dc_connect();
-		if (err) {
-			return err;
-		}
+		if (!persistent_session) {
+			err = nct_dc_connect();
+			if (err) {
+				return err;
+			}
 
-		nfsm_set_current_state_and_notify(STATE_DC_CONNECTING, NULL);
+			nfsm_set_current_state_and_notify(STATE_DC_CONNECTING,
+							  NULL);
+		} else {
+			struct nct_evt nevt = { .type = NCT_EVT_DC_CONNECTED,
+						.status = 0 };
+
+			LOG_DBG("Previous session valid;"
+				" skipping nct_dc_connect()");
+			nfsm_handle_incoming_event(&nevt, STATE_DC_CONNECTING);
+		}
 	}
 
 	return 0;
@@ -463,6 +481,7 @@ static int dc_rx_data_handler(const struct nct_evt *nct_evt)
 	struct nrf_cloud_evt cloud_evt = {
 		.type = NRF_CLOUD_EVT_RX_DATA,
 		.data = nct_evt->param.dc->data,
+		.topic = nct_evt->param.dc->topic,
 	};
 
 	/* All data is forwared to the app */

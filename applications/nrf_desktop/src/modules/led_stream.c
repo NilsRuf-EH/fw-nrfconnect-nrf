@@ -1,16 +1,16 @@
 /*
  * Copyright (c) 2019 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 #include <zephyr.h>
 #include <sys/byteorder.h>
 
 #define MODULE led_stream
-#include "module_state_event.h"
+#include <caf/events/module_state_event.h>
 
-#include "led_event.h"
+#include <caf/events/led_event.h>
 #include "config_event.h"
 
 #include <logging/log.h>
@@ -29,12 +29,18 @@ struct led {
 	const struct led_effect *state_effect;
 	struct led_effect led_stream_effect;
 	struct led_effect_step steps_queue[STEPS_QUEUE_ARRAY_SIZE];
-	u8_t rx_idx;
-	u8_t tx_idx;
+	uint8_t rx_idx;
+	uint8_t tx_idx;
 	bool streaming;
 };
 
-static struct led leds[CONFIG_DESKTOP_LED_COUNT];
+#define DT_DRV_COMPAT pwm_leds
+#define _LED_INSTANCE_DEF(id) { 0 },
+
+static struct led leds[] = {
+	DT_INST_FOREACH_STATUS_OKAY(_LED_INSTANCE_DEF)
+};
+
 static bool initialized;
 
 enum led_stream_opt {
@@ -55,14 +61,17 @@ static size_t next_index(size_t index)
 	return (index + 1) % STEPS_QUEUE_ARRAY_SIZE;
 }
 
-static bool queue_data(const u8_t *data, const size_t size, struct led *led)
+static bool queue_data(const uint8_t *data, const size_t size, struct led *led)
 {
-	static const size_t min_len = CONFIG_DESKTOP_LED_COLOR_COUNT * sizeof(led->steps_queue[led->rx_idx].color.c[0])
-			 + sizeof(led->steps_queue[led->rx_idx].substep_count)
-			 + sizeof(led->steps_queue[led->rx_idx].substep_time)
-			 + sizeof(u8_t); /* LED ID */
+	BUILD_ASSERT(ARRAY_SIZE(led->steps_queue[led->rx_idx].color.c) == INCOMING_LED_COLOR_COUNT,
+		     "");
 
-	BUILD_ASSERT_MSG(min_len <= LED_STREAM_DATA_SIZE, "");
+	static const size_t min_len = sizeof(led->steps_queue[led->rx_idx].color.c)
+				    + sizeof(led->steps_queue[led->rx_idx].substep_count)
+				    + sizeof(led->steps_queue[led->rx_idx].substep_time)
+				    + sizeof(uint8_t); /* LED ID */
+
+	BUILD_ASSERT(min_len <= LED_STREAM_DATA_SIZE, "");
 
 	if (size != LED_STREAM_DATA_SIZE) {
 		LOG_WRN("Invalid stream data size (%zu)", size);
@@ -73,10 +82,9 @@ static bool queue_data(const u8_t *data, const size_t size, struct led *led)
 
 	size_t pos = 0;
 
-	/* Fill only leds available in the system */
-	memcpy(led->steps_queue[led->rx_idx].color.c, &data[pos],
-	       CONFIG_DESKTOP_LED_COLOR_COUNT);
-	pos += INCOMING_LED_COLOR_COUNT;
+	for (size_t i = 0; i < ARRAY_SIZE(led->steps_queue[led->rx_idx].color.c); i++, pos++) {
+		led->steps_queue[led->rx_idx].color.c[i] = COLOR_BRIGHTNESS_TO_PCT(data[pos]);
+	}
 
 	led->steps_queue[led->rx_idx].substep_count = sys_get_le16(&data[pos]);
 	pos += sizeof(led->steps_queue[led->rx_idx].substep_count);
@@ -119,7 +127,7 @@ static bool is_queue_empty(struct led *led)
 	return led->rx_idx == led->tx_idx;
 }
 
-static bool store_data(const u8_t *data, const size_t size, struct led *led)
+static bool store_data(const uint8_t *data, const size_t size, struct led *led)
 {
 	size_t free_places = count_free_places(led);
 
@@ -155,7 +163,7 @@ static void send_data_from_queue(struct led *led)
 	}
 }
 
-static void handle_incoming_step(const u8_t *data, const size_t size)
+static void handle_incoming_step(const uint8_t *data, const size_t size)
 {
 	if (!initialized) {
 		LOG_WRN("Not initialized");
@@ -184,7 +192,7 @@ static void handle_incoming_step(const u8_t *data, const size_t size)
 	}
 }
 
-static void config_set(const u8_t opt_id, const u8_t *data, const size_t size)
+static void config_set(const uint8_t opt_id, const uint8_t *data, const size_t size)
 {
 	switch (opt_id) {
 	case LED_STREAM_OPT_SET_LED_EFFECT:
@@ -197,9 +205,9 @@ static void config_set(const u8_t opt_id, const u8_t *data, const size_t size)
 	}
 }
 
-static void fetch_leds_state(u8_t *data, size_t *size)
+static void fetch_leds_state(uint8_t *data, size_t *size)
 {
-	u8_t free_places;
+	uint8_t free_places;
 
 	BUILD_ASSERT(sizeof(initialized) + ARRAY_SIZE(leds) * sizeof(free_places) <=
 		     CONFIG_CHANNEL_FETCHED_DATA_MAX_SIZE);
@@ -222,7 +230,7 @@ static void fetch_leds_state(u8_t *data, size_t *size)
 	*size = pos;
 }
 
-static void config_get(const u8_t opt_id, u8_t *data, size_t *size)
+static void config_get(const uint8_t opt_id, uint8_t *data, size_t *size)
 {
 	switch (opt_id) {
 	case LED_STREAM_OPT_GET_LEDS_STATE:
@@ -238,7 +246,7 @@ static void config_get(const u8_t opt_id, u8_t *data, size_t *size)
 static bool event_handler(const struct event_header *eh)
 {
 	GEN_CONFIG_EVENT_HANDLERS(STRINGIFY(MODULE), opt_descr, config_set,
-				  config_get, false);
+				  config_get);
 
 	if (is_led_event(eh)) {
 		const struct led_event *event = cast_led_event(eh);
@@ -299,5 +307,4 @@ EVENT_LISTENER(MODULE, event_handler);
 EVENT_SUBSCRIBE_EARLY(MODULE, led_event);
 EVENT_SUBSCRIBE(MODULE, led_ready_event);
 EVENT_SUBSCRIBE(MODULE, module_state_event);
-EVENT_SUBSCRIBE(MODULE, config_event);
-EVENT_SUBSCRIBE(MODULE, config_fetch_request_event);
+EVENT_SUBSCRIBE_EARLY(MODULE, config_event);

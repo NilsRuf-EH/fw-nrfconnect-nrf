@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2020 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 #ifndef _HID_REPORT_MOUSE_H_
@@ -43,6 +43,13 @@ extern "C" {
 #define MOUSE_REPORT_XY_MIN_BOOT	(-0x80)
 #define MOUSE_REPORT_XY_MAX_BOOT	(0x7f)
 #define MOUSE_REPORT_BUTTON_COUNT_MAX	8
+
+enum {
+	MOUSE_REPORT_AXIS_X,
+	MOUSE_REPORT_AXIS_Y,
+	MOUSE_REPORT_AXIS_WHEEL,
+	MOUSE_REPORT_AXIS_COUNT
+};
 
 
 #define REPORT_MAP_MOUSE(report_id)					\

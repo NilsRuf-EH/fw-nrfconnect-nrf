@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2019 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 #ifndef ZEPHYR_INCLUDE_MODEM_INFO_H_
@@ -9,6 +9,12 @@
 
 #ifdef CONFIG_CJSON_LIB
 #include <cJSON.h>
+#endif
+
+#include <modem/at_params.h>
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 /**
@@ -57,12 +63,13 @@ enum modem_info {
 	MODEM_INFO_IMSI,	/**< Mobile subscriber identity. */
 	MODEM_INFO_IMEI,	/**< Modem serial number. */
 	MODEM_INFO_DATE_TIME,	/**< Mobile network time and date */
+	MODEM_INFO_APN,		/**< Access point name. */
 	MODEM_INFO_COUNT,	/**< Number of legal elements in the enum. */
 };
 
 /**@brief LTE parameter data. **/
 struct lte_param {
-	u16_t value; /**< The retrieved value. */
+	uint16_t value; /**< The retrieved value. */
 	char value_string[MODEM_INFO_MAX_RESPONSE_SIZE]; /**< The retrieved value in string format. */
 	char *data_name; /**< The name of the information type. */
 	enum modem_info type; /**< The information type. */
@@ -83,6 +90,7 @@ struct network_param {
 	struct lte_param nbiot_mode; /**< NB-IoT support mode. */
 	struct lte_param gps_mode; /**< GPS support mode. */
 	struct lte_param date_time; /**< Mobile network time and date */
+	struct lte_param apn; /**< Access point name (string). */
 
 	double cellid_dec; /**< Cell ID of the device (in decimal format). */
 	char network_mode[MODEM_INFO_NETWORK_MODE_MAX_SIZE];
@@ -145,13 +153,14 @@ int modem_info_rsrp_register(rsrp_cb_t cb);
  * short, it is still returned as a string.
  *
  * @param info The requested information type.
- * @param buf  The string where to store the information.
+ * @param buf  The buffer to store the null-terminated string.
+ * @param buf_size The size of the buffer.
  *
  * @return Length of received data if the operation was successful.
  *         Otherwise, a (negative) error code is returned.
  */
-int modem_info_string_get(enum modem_info info, char *buf);
-
+int modem_info_string_get(enum modem_info info, char *buf,
+			  const size_t buf_size);
 /** @brief Request the current modem status of any predefined
  *         information value as a short.
  *
@@ -164,12 +173,12 @@ int modem_info_string_get(enum modem_info info, char *buf);
  * @return Length of received data if the operation was successful.
  *         Otherwise, a (negative) error code is returned.
  */
-int modem_info_short_get(enum modem_info info, u16_t *buf);
+int modem_info_short_get(enum modem_info info, uint16_t *buf);
 
 /** @brief Request the name of a modem information data type.
  *
  * @param info The requested information type.
- * @param buf  The string where to store the name.
+ * @param name The string where to store the name.
  *
  * @return Length of received data if the operation was successful.
  *         Otherwise, a (negative) error code is returned.
@@ -229,5 +238,9 @@ int modem_info_json_object_encode(struct modem_param_info *modem,
 int modem_info_params_get(struct modem_param_info *modem_param);
 
 /** @} */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* ZEPHYR_INCLUDE_MODEM_INFO_H_ */

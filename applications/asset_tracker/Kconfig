@@ -1,7 +1,7 @@
 #
 # Copyright (c) 2018 Nordic Semiconductor ASA
 #
-# SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
 #
 
 menu "Asset tracker"
@@ -10,7 +10,7 @@ rsource "src/ui/Kconfig"
 
 config APPLICATION_WORKQUEUE_STACK_SIZE
 	int "Application workqueue stack size"
-	default 2048
+	default 4096
 
 config APPLICATION_WORKQUEUE_PRIORITY
 	int "Application workqueue priority"
@@ -89,6 +89,14 @@ config GPS_CONTROL_FIX_CHECK_INTERVAL
 	  and landscape, PSM interval and activity time requested and granted
 	  by the network.
 
+config GPS_CONTROL_FIX_CHECK_OVERDUE
+	int "Longest allowed time in seconds between checks for position fix"
+	default 900
+	help
+	  The fix check interval gives the interval for how long it will go
+	  between each retry to achieve position fix, when GPS_START_ON_MOTION
+	  enabled, even if no motion is detected.
+
 config GPS_CONTROL_FIX_TRY_TIME
 	int "Time in seconds to try to get fix"
 	default 180
@@ -123,6 +131,17 @@ config GPS_START_ON_MOTION
 	  position, but if no movement, wait a longer delay between updates
 	  to conserve power.
 
+if NRF_CLOUD_PGPS
+
+config PGPS_STORE_LOCATION
+	bool "Store location when GPS fix occurs"
+	help
+	  For semi-stationary applications, the first fix after reset will
+	  be faster using predicted GPS if the last known location is provided
+	  to the modem.
+
+endif
+
 endmenu # GPS
 
 menu "Device and modem"
@@ -145,7 +164,14 @@ endif
 
 endmenu # Device
 
-menu "Motion"
+menuconfig MOTION
+	bool "Enable motion sensing in Asset Tracker"
+	default y
+	help
+	  Enables motion sensing in asset tracker with real
+	  sensors or simulated ones.
+
+if MOTION
 
 choice
 	prompt "Accelerometer device"
@@ -158,7 +184,6 @@ config ACCEL_USE_SIM
 	select SENSOR
 	select SENSOR_SIM
 	select SENSOR_SIM_TRIGGER
-	select SENSOR_SIM_STATIC_VALUES
 	help
 	  Use sensor simulator to generate accelerometer data for
 	  flip detection data sent to nRF Cloud.
@@ -182,10 +207,10 @@ config ACCEL_TRIGGER
 
 config FLIP_INPUT
 	int "Button or switch number to simulate flip"
-	range 1 4 if BOARD_NRF9160_PCA10090NS
-	range 1 1 if BOARD_NRF9160_PCA20035NS
-	default 3 if BOARD_NRF9160_PCA10090NS
-	default 1 if BOARD_NRF9160_PCA20035NS
+	range 1 4 if BOARD_NRF9160DK_NRF9160NS
+	range 1 1 if BOARD_THINGY91_NRF9160NS
+	default 3 if BOARD_NRF9160DK_NRF9160NS
+	default 1 if BOARD_THINGY91_NRF9160NS
 	help
 	  Button or switch number to use for simulating
 	  a board flip event.
@@ -207,18 +232,25 @@ endif
 
 config ACCEL_INVERTED
 	bool "Accelerometer inverted"
-	default y if BOARD_NRF9160_PCA20035NS
+	default y if BOARD_THINGY91_NRF9160NS
 	help
 	  Enable if the accelerometer is mounted with the top side facing
 	  down when the board itself is in normal position.
 
-endmenu # Motion
+endif # MOTION
 
 menu "Cloud"
 
 config MQTT_KEEPALIVE
-	int
+	int "Time after last transmission to send a ping to keep connection on"
 	default 1200
+	help
+	  This should be set to the expected time between messages sent from
+	  this device. Making it larger than the expected data period does not
+	  conserve bandwidth, as the ping is only sent if nothing else
+	  has been within the specified period. Shorter values can prevent hidden
+	  NAT timeouts at the carrier, but also will interrupt GPS fix attempts
+	  and slow down TTFF.
 
 config CLOUD_BUTTON
 	bool "Enable button sensor"
@@ -226,36 +258,74 @@ config CLOUD_BUTTON
 
 config CLOUD_BUTTON_INPUT
 	int "Set button sensor button number"
-	range 1 4 if BOARD_NRF9160_PCA10090NS
-	range 1 1 if BOARD_NRF9160_PCA20035NS
+	range 1 4 if BOARD_NRF9160DK_NRF9160NS
+	range 1 1 if BOARD_THINGY91_NRF9160NS
 	default 1
+
+config CLOUD_CONNECT_RETRY_DELAY
+	int "Cloud connection retry delay in seconds"
+	default 480
+	help
+	  Time to wait before trying to reconnect to the cloud if the
+	  previous attempt failed (in seconds).
+
+config CLOUD_CONNECT_COUNT_MAX
+	int "Maximum number of cloud connection attempts"
+	default 8
+	help
+	  Maximum number of unsuccessful cloud connection attempts.
+	  Device will wait for the value defined by CLOUD_CONNECT_RETRY_DELAY
+	  between attempts.
 
 config CLOUD_WAIT_DURATION
 	int "Cloud connection acknowledge wait duration"
 	default 30
 	help
 	  How long the device should wait for a CONNACK
-	  event from the cloud.
+	  event from the cloud when connecting.  Device will reboot
+	  if an ack is not received within the duration.
 
 config CLOUD_FOTA_APP
 	bool "Enable firmware over-the-air upgrades for application"
-	depends on AWS_FOTA
+	depends on AWS_FOTA || NRF_CLOUD_FOTA
 	depends on DFU_TARGET_MCUBOOT
 	default y
 
 config CLOUD_FOTA_MODEM
 	bool "Enable firmware over-the-air upgrades for modem"
-	depends on AWS_FOTA
-	depends on DFU_TARGET_MODEM
+	depends on AWS_FOTA || NRF_CLOUD_FOTA
+	depends on DFU_TARGET_MODEM_DELTA
+	default y
+
+config CLOUD_FOTA_BOOT
+	bool "Enable firmware over-the-air upgrades for bootloader"
+	depends on AWS_FOTA || NRF_CLOUD_FOTA
+	depends on DFU_TARGET_MCUBOOT
+	depends on SECURE_BOOT
 	default y
 
 config CLOUD_CONNECT_ERR_REBOOT_S
 	int "Seconds to wait before rebooting when a cloud connect error occurs"
 	default 300
 
+if NRF_CLOUD_CLIENT_ID_SRC_RUNTIME
+
+config CLOUD_RUNTIME_CLIENT_ID
+	string "Client ID used for cloud connection"
+	default "my_runtime_client_id"
+
+endif # NRF_CLOUD_CLIENT_ID_SRC_RUNTIME
+
 endmenu # Cloud
 
-menu "Environment sensors"
+menuconfig ENVIRONMENT_SENSORS
+	bool "Enable environment sensing in Asset Tracker"
+	default y
+	help
+	  Enables environment sensing in asset tracker with real
+	  sensors or simulated ones.
+
+if ENVIRONMENT_SENSORS
 
 config USE_BME680_BSEC
 	bool "Use Bosch BME680 BSEC lib"
@@ -266,7 +336,7 @@ config USE_BME680_BSEC
 
 config BOSCH_BSEC_LIBRARY_PATH
 	string "Path to Bosch BSEC library folder"
-	default "$(ZEPHYR_BASE)/../nrf/ext/BSEC_1.4.7.4_Generic_Release"
+	default "$(ZEPHYR_BASE)/../nrf/ext/BSEC_1.4.8.0_Generic_Release"
 	help
 	  Path to the folder where the Bosch BSEC library is placed.
 
@@ -318,10 +388,10 @@ config TEMP_TRIGGER
 
 config TEMP_SIM_BUTTON
 	int "Button or switch to trigger 'data ready' event"
-	range 1 4 if BOARD_NRF9160_PCA10090NS
-	range 1 1 if BOARD_NRF9160_PCA20035NS
-	default 3 if BOARD_NRF9160_PCA10090NS
-	default 1 if BOARD_NRF9160_PCA20035NS
+	range 1 4 if BOARD_NRF9160DK_NRF9160NS
+	range 1 1 if BOARD_THINGY91_NRF9160NS
+	default 3 if BOARD_NRF9160DK_NRF9160NS
+	default 1 if BOARD_THINGY91_NRF9160NS
 	help
 	  Button or switch number to use for triggering
 	  a 'data ready' event.
@@ -341,18 +411,18 @@ config TEMP_DEV_NAME
 
 endif
 
-endmenu # Environment sensors
+endif # ENVIRONMENT_SENSORS
 
 menuconfig LIGHT_SENSOR
 	bool "Light sensor"
-	select BH1749 if BOARD_NRF9160_PCA20035NS
-	default y if BOARD_NRF9160_PCA20035NS
+	select BH1749 if BOARD_THINGY91_NRF9160NS
+	default y if BOARD_THINGY91_NRF9160NS
 
 if LIGHT_SENSOR
 
 config LIGHT_SENSOR_DEV_NAME
 	string "Light sensor device name"
-	default "BH1749" if BOARD_NRF9160_PCA20035NS
+	default "BH1749" if BOARD_THINGY91_NRF9160NS
 
 config LIGHT_SENSOR_DATA_SEND_INTERVAL
 	int "Interval in seconds for sending light sensor data"
@@ -374,7 +444,7 @@ config GPS_START_AFTER_CLOUD_EVT_READY
 
 config ASSET_TRACKER_WATCHDOG_TIMEOUT_MSEC
 	int "Watchdog timeout in milliseconds"
-	default 10000
+	default 60000
 
 config USE_AT_HOST
 	bool "Enable AT commands"

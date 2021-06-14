@@ -5,6 +5,10 @@
 Working with Thingy:91
 ######################
 
+.. contents::
+   :local:
+   :depth: 2
+
 Nordic Thingy:91 is a battery-operated prototyping platform for cellular IoT systems, designed especially for asset tracking applications and environmental monitoring.
 
 Thingy:91 integrates the following components:
@@ -20,8 +24,8 @@ The |NCS| provides support for developing applications on the Thingy:91.
 Connecting to Thingy:91 serial ports
 ************************************
 
-For connecting to Thingy:91, you can use LTE Link Monitor, Trace Collector applications, or a serial terminal.
-In the case of LTE Link Monitor or Trace Collector applications, the baud rate for the communication is set automatically.
+For connecting to Thingy:91, you can use `LTE Link Monitor`_, `Trace Collector`_, or a serial terminal.
+In the case of LTE Link Monitor or Trace Collector, the baud rate for the communication is set automatically.
 
 If you prefer to use a standard serial terminal, the baud rate has to be specified manually.
 
@@ -44,9 +48,9 @@ Firmware
 
 The firmware of Thingy:91 has been developed using the nRF Connect SDK.
 It is open source, and can be modified according to specific needs.
-The :ref:`asset_tracker` application firmware, which is pre-flashed in the Thingy:91, enables the device to use the environment sensors and provides an option of tracking the device using GPS.
+The :ref:`asset_tracker` application firmware, which is preprogrammed in the Thingy:91, enables the device to use the environment sensors and provides an option of tracking the device using GPS.
 
-The data, along with information about the device, is transmitted to Nordic Semiconductor's cloud solution, `nRF Cloud`_, where it can be visualized.
+The data, along with information about the device, is transmitted to Nordic Semiconductor's cloud solution, `nRF Connect for Cloud`_, where it can be visualized.
 See :ref:`asset_tracker` for more information on the asset tracker application.
 
 Operating modes
@@ -66,7 +70,7 @@ LTE Band Lock
 
 The modem within Thingy:91 can be configured to use specific LTE bands by using the band lock AT command.
 See :ref:`nrf9160_ug_band_lock` and the `band lock section in the AT Commands reference document`_ for additional information.
-The pre-flashed firmware configures the modem to use the bands currently certified on the Thingy:91 hardware.
+The preprogrammed firmware configures the modem to use the bands currently certified on the Thingy:91 hardware.
 When building the firmware, you can configure which bands should be enabled.
 
 LTE-M / NB-IoT switching
@@ -74,7 +78,15 @@ LTE-M / NB-IoT switching
 
 Thingy:91 has a multimode modem, which enables it to support automatic switching between LTE-M and NB-IoT.
 A built-in parameter in the Thingy:91 firmware determines whether the modem first attempts to connect in LTE-M or NB-IoT mode.
-If the modem fails to connect using this preferred mode within the default time-out period (10 minutes), the modem switches to the other mode.
+If the modem fails to connect using this preferred mode within the default timeout period (10 minutes), the modem switches to the other mode.
+
+.. |An nRF9160-based device| replace:: A Thingy:91
+
+.. |an nRF9160-based device| replace:: a Thingy:91
+
+.. include:: ug_nrf9160.rst
+   :start-after: nrf9160_gps_lte_start
+   :end-before: nrf9160_gps_lte_end
 
 Modem firmware
 ==============
@@ -101,7 +113,7 @@ Downloading precompiled firmware images
 
 To obtain precompiled firmware images for updating the firmware, perform the following steps:
 
-	1. Go to the `Thingy:91 product page`_ and under the **Downloads** tab, navigate to **Precompiled firmware**.
+	1. Go to the `Thingy:91 product page`_ and under the :guilabel:`Downloads` tab, navigate to :guilabel:`Precompiled firmware`.
 	#. Download and extract the latest Thingy:91 firmware package.
 	#. Check the :file:`CONTENTS.txt` file in the extracted folder for the location and names of the different firmware images.
 
@@ -116,16 +128,19 @@ In this method, the Thingy:91 is connected directly to your PC through USB.
 This method makes use of the :doc:`mcuboot:index` feature and the inbuilt serial recovery mode of Thingy:91.
 You can program either the nRF9160 SiP or the nRF52840 SoC component on the Thingy:91.
 
-For the detailed procedures for programming a Thingy:91 using nRF Connect Programmer, see the following documentation:
+Alternatively, you can use an external debug probe such as nRF9160 DK or any J-Link device supporting ARM Cortex-M33 to program applications on a Thingy:91.
 
-* `Programming the nRF9160 SiP of Thingy:91 through USB`_
-* `Programming the nRF52840 SoC of Thingy:91 through USB`_
+See `Programming applications on Nordic Thingy:91`_ for the detailed procedures to program a Thingy:91 using nRF Connect Programmer.
 
 Updating the modem firmware
 ===========================
 
-You can update the modem firmware of Thingy:91 by using an external debug probe such as nRF9160 DK or any J-Link device supporting ARM Cortex-M33.
-See `Updating the Thingy:91 modem`_ for the detailed steps to update the modem firmware.
+You can update the modem firmware of Thingy:91 using any of the following methods:
+
+* Using USB (MCUboot)
+* Using an external debug probe such as nRF9160 DK or any J-Link device supporting ARM Cortex-M33
+
+See `Programming the Thingy:91 modem`_ for the detailed steps to update the modem firmware.
 
 .. _building_pgming:
 
@@ -140,14 +155,18 @@ The build targets of interest for Thingy:91 in |NCS| are as follows:
 +---------------+--------------------------------------------------+
 |Component      |  Build target                                    |
 +===============+==================================================+
-|nRF9160 SiP    |``nrf9160_pca20035`` for the secure version       |
+|nRF9160 SiP    |``thingy91_nrf9160`` for the secure version       |
 |               |                                                  |
-|               |``nrf9160_pca20035ns`` for the non-secure version |
+|               |``thingy91_nrf9160ns`` for the non-secure version |
 +---------------+--------------------------------------------------+
-|nRF52840 SoC   |``nrf52840_pca20035``                             |
+|nRF52840 SoC   |``thingy91_nrf52840``                             |
 +---------------+--------------------------------------------------+
 
-You should use the build target ``nrf9160_pca20035`` or ``nrf9160_pca20035ns`` when building the application code for the nRF9160 SiP and the build target ``nrf52840_pca20035`` when building the application code for the onboard nRF52840 SoC.
+You should use the build target ``thingy91_nrf9160`` or ``thingy91_nrf9160ns`` when building the application code for the nRF9160 SiP and the build target ``thingy91_nrf52840`` when building the application code for the onboard nRF52840 SoC.
+
+.. note::
+
+   In |NCS| releases before v1.3.0, these build targets were named ``nrf9160_pca20035``, ``nrf9160_pca20035ns``, and ``nrf52840_pca20035``.
 
 .. note::
 
@@ -190,18 +209,19 @@ Building and programming using SEGGER Embedded Studio
    :start-after: build_SES_projimport_open_start
    :end-before: build_SES_projimport_open_end
 
+..
 
-.. figure:: images/ses_thingy_configuration.png
-   :alt: Opening the Asset tracker application
+   .. figure:: images/ses_thingy_configuration.png
+      :alt: Opening the Asset tracker application
 
-   Opening the Asset tracker application for the nrf9160_pca20035ns build target
+      Opening the Asset tracker application for the thingy91_nrf9160ns build target
 
-.. note::
+   .. note::
 
-   The *Board Directory* folder can be found in the following location: ``ncs/nrf/boards/arm``.
+      The *Board Directory* folder can be found in the following location: ``ncs/nrf/boards/arm``.
 
 
-4. Click **OK** to import the project into SES.
+4. Click :guilabel:`OK` to import the project into SES.
    You can now work with the project in the IDE.
 
    .. include:: gs_programming.rst
@@ -211,7 +231,7 @@ Building and programming using SEGGER Embedded Studio
 #. To build the sample or application:
 
    a. Select your project in the Project Explorer.
-   #. From the menu, select **Build -> Build Solution**.
+   #. From the menu, select :guilabel:`Build` > :guilabel:`Build Solution`.
       This builds the project.
 
    You can find the output of the build, which includes the merged HEX file containing both the application and the SPM, in the ``zephyr`` subfolder in the build directory.
@@ -233,8 +253,8 @@ Building and programming using SEGGER Embedded Studio
 .. prog_extdebugprobe_end
 ..
 
-   e. In SES, select **Target -> Connect J-Link**.
-   #. Select **Target -> Download zephyr/merged.hex** to program the sample or application onto Thingy:91.
+   e. In SES, select :guilabel:`Target` > :guilabel:`Connect J-Link`.
+   #. Select :guilabel:`Target` > :guilabel:`Download zephyr/merged.hex` to program the sample or application onto Thingy:91.
    #. The device will reset and run the programmed sample or application.
 
 .. _build_pgm_cmdline:
@@ -248,9 +268,9 @@ To build and program the source code from the command line, complete the followi
 
 1. Open a terminal window.
 #. Go to the specific sample or application directory.
-   For example, the folder path is ``ncs/nrf/applications/asset_tracker`` when building the source code for the :ref:`asset_tracker` application on the nRF9160 SiP component and ``ncs/nrf/samples/usb/usb_uart_bridge`` when building the source code for the :ref:`usb_uart_bridge_sample` sample on the nRF52840 SoC component.
+   For example, the folder path is ``ncs/nrf/applications/asset_tracker`` when building the source code for the :ref:`asset_tracker` application on the nRF9160 SiP component and ``ncs/nrf/applications/connectivity_bridge`` when building the source code for the :ref:`connectivity_bridge` application on the nRF52840 SoC component.
 
-#. Make sure that you have the required version of the |NCS| repository by pulling the |NCS| repository, `fw-nrfconnect-nrf`_ on GitHub using the procedures described in :ref:`dm-wf-get-ncs` and :ref:`dm-wf-update-ncs`.
+#. Make sure that you have the required version of the |NCS| repository by pulling the |NCS| repository, `sdk-nrf`_ on GitHub using the procedures described in :ref:`dm-wf-get-ncs` and :ref:`dm-wf-update-ncs`.
 
 #. To get the rest of the dependencies, run the ``west update`` command as follows:
 
@@ -264,9 +284,9 @@ To build and program the source code from the command line, complete the followi
    .. parsed-literal::
       :class: highlight
 
-	  west build -b *board_name* -d *destination_directory_name*
+	  west build -b *build_target* -d *destination_directory_name*
 
-   The parameter *board_name* should be ``nrf9160_pca20035`` or ``nrf9160_pca20035ns`` if building for the nRF9160 SiP component and ``nrf52840_pca20035`` if building for the nRF52840 SoC component.
+   The parameter *build_target* should be ``thingy91_nrf9160`` or ``thingy91_nrf9160ns`` if building for the nRF9160 SiP component and ``thingy91_nrf52840`` if building for the nRF52840 SoC component.
 
    .. note::
 

@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2018 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 /* Event manager private header.
@@ -89,12 +89,13 @@ extern "C" {
 #define _EVENT_ALLOCATOR_FN(ename)					\
 	static inline struct ename *_CONCAT(new_, ename)(void)		\
 	{								\
-		struct ename *event = k_malloc(sizeof(*event));	\
-		BUILD_ASSERT_MSG(offsetof(struct ename, header) == 0,	\
+		struct ename *event = (struct ename *)k_malloc(sizeof(*event));\
+		BUILD_ASSERT(offsetof(struct ename, header) == 0,	\
 				 "");					\
-		if (unlikely(!event)) {				\
+		if (unlikely(!event)) {					\
 			printk("Event Manager OOM error\n");		\
 			LOG_PANIC();					\
+			__ASSERT_NO_MSG(false);				\
 			sys_reboot(SYS_REBOOT_WARM);			\
 			return NULL;					\
 		}							\
@@ -110,15 +111,16 @@ extern "C" {
 #define _EVENT_ALLOCATOR_DYNDATA_FN(ename)				\
 	static inline struct ename *_CONCAT(new_, ename)(size_t size)	\
 	{								\
-		struct ename *event = k_malloc(sizeof(*event) + size);	\
-		BUILD_ASSERT_MSG((offsetof(struct ename, dyndata) +	\
+		struct ename *event = (struct ename *)k_malloc(sizeof(*event) + size);\
+		BUILD_ASSERT((offsetof(struct ename, dyndata) +		\
 				  sizeof(event->dyndata.size)) ==	\
 				 sizeof(*event), "");			\
-		BUILD_ASSERT_MSG(offsetof(struct ename, header) == 0,	\
+		BUILD_ASSERT(offsetof(struct ename, header) == 0,	\
 				 "");					\
-		if (unlikely(!event)) {				\
+		if (unlikely(!event)) {					\
 			printk("Event Manager OOM error\n");		\
 			LOG_PANIC();					\
+			__ASSERT_NO_MSG(false);				\
 			sys_reboot(SYS_REBOOT_WARM);			\
 			return NULL;					\
 		}							\
@@ -155,7 +157,7 @@ extern "C" {
 
 
 /* Wrappers used for defining event infos */
-#ifdef CONFIG_DESKTOP_EVENT_MANAGER_TRACE_EVENT_EXECUTION
+#ifdef CONFIG_EVENT_MANAGER_TRACE_EVENT_EXECUTION
 #define MEM_ADDRESS_LABEL "mem_address",
 #define MEM_ADDRESS_TYPE PROFILER_ARG_U32,
 
@@ -163,10 +165,10 @@ extern "C" {
 #define MEM_ADDRESS_LABEL
 #define MEM_ADDRESS_TYPE
 
-#endif /* CONFIG_DESKTOP_EVENT_MANAGER_TRACE_EVENT_EXECUTION */
+#endif /* CONFIG_EVENT_MANAGER_TRACE_EVENT_EXECUTION */
 
 
-#ifdef CONFIG_DESKTOP_EVENT_MANAGER_PROFILE_EVENT_DATA
+#ifdef CONFIG_EVENT_MANAGER_PROFILE_EVENT_DATA
 #define _ARG_LABELS_DEFINE(...) \
 	{MEM_ADDRESS_LABEL __VA_ARGS__}
 #define _ARG_TYPES_DEFINE(...) \
@@ -178,7 +180,7 @@ extern "C" {
 #define _ARG_TYPES_DEFINE(...) \
 	 {MEM_ADDRESS_TYPE}
 
-#endif /* CONFIG_DESKTOP_EVENT_MANAGER_PROFILE_EVENT_DATA */
+#endif /* CONFIG_EVENT_MANAGER_PROFILE_EVENT_DATA */
 
 
 /* Declarations and definitions - for more details refer to public API. */

@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2019 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 #include <zephyr.h>
@@ -16,12 +16,13 @@
 LOG_MODULE_REGISTER(gps_control, CONFIG_ASSET_TRACKER_LOG_LEVEL);
 
 /* Structure to hold GPS work information */
-static struct device *gps_dev;
+static const struct device *gps_dev;
 static atomic_t gps_is_enabled;
 static atomic_t gps_is_active;
 static struct k_work_q *app_work_q;
-static struct k_delayed_work start_work;
-static struct k_delayed_work stop_work;
+static struct k_work_delayable start_work;
+static struct k_work_delayable stop_work;
+static int gps_reporting_interval_seconds;
 
 static void start(struct k_work *work)
 {
@@ -32,7 +33,8 @@ static void start(struct k_work *work)
 		.power_mode = GPS_POWER_MODE_DISABLED,
 		.timeout = CONFIG_GPS_CONTROL_FIX_TRY_TIME,
 		.interval = CONFIG_GPS_CONTROL_FIX_TRY_TIME +
-			CONFIG_GPS_CONTROL_FIX_CHECK_INTERVAL,
+			gps_reporting_interval_seconds,
+		.priority = true,
 	};
 
 	if (gps_dev == NULL) {
@@ -66,7 +68,13 @@ static void start(struct k_work *work)
 	LOG_INF("The device will attempt to get a fix for %d seconds, ",
 		CONFIG_GPS_CONTROL_FIX_TRY_TIME);
 	LOG_INF("before the GPS is stopped. It's restarted every %d seconds",
+		gps_reporting_interval_seconds);
+#if !defined(CONFIG_GPS_SIM)
+#if IS_ENABLED(CONFIG_GPS_START_ON_MOTION)
+	LOG_INF("or as soon as %d seconds later when movement occurs.",
 		CONFIG_GPS_CONTROL_FIX_CHECK_INTERVAL);
+#endif
+#endif
 }
 
 static void stop(struct k_work *work)
@@ -79,7 +87,7 @@ static void stop(struct k_work *work)
 		return;
 	}
 
-#ifdef CONFIG_GPS_CONTROL_PSM_ENABLE_ON_START
+#ifdef CONFIG_GPS_CONTROL_PSM_DISABLE_ON_STOP
 	LOG_INF("Disabling PSM");
 
 	err = lte_lc_psm_req(false);
@@ -87,14 +95,15 @@ static void stop(struct k_work *work)
 		LOG_ERR("PSM mode could not be disabled, error: %d",
 			err);
 	}
-#endif /* CONFIG_GPS_CONTROL_PSM_ENABLE_ON_START */
+#endif /* CONFIG_GPS_CONTROL_PSM_DISABLE_ON_STOP */
 
 	err = gps_stop(gps_dev);
 	if (err) {
 		LOG_ERR("Failed to disable GPS, error: %d", err);
 		return;
 	}
-
+	/* start work runs on same queue. This should be safe */
+	k_work_cancel_delayable(&start_work);
 	atomic_set(&gps_is_enabled, 0);
 	gps_control_set_active(false);
 	LOG_INF("GPS operation was stopped");
@@ -115,14 +124,21 @@ bool gps_control_set_active(bool active)
 	return atomic_set(&gps_is_active, active ? 1 : 0);
 }
 
-void gps_control_start(u32_t delay_ms)
+void gps_control_start(uint32_t delay_ms)
 {
-	k_delayed_work_submit_to_queue(app_work_q, &start_work, delay_ms);
+	k_work_reschedule_for_queue(app_work_q, &start_work,
+				       K_MSEC(delay_ms));
 }
 
-void gps_control_stop(u32_t delay_ms)
+void gps_control_stop(uint32_t delay_ms)
 {
-	k_delayed_work_submit_to_queue(app_work_q, &stop_work, delay_ms);
+	k_work_reschedule_for_queue(app_work_q, &stop_work,
+				       K_MSEC(delay_ms));
+}
+
+int gps_control_get_gps_reporting_interval(void)
+{
+	return gps_reporting_interval_seconds;
 }
 
 /** @brief Configures and starts the GPS device. */
@@ -137,6 +153,11 @@ int gps_control_init(struct k_work_q *work_q, gps_event_handler_t handler)
 
 	if ((work_q == NULL) || (handler == NULL)) {
 		return -EINVAL;
+	}
+
+	if (!IS_ENABLED(CONFIG_NRF9160_GPS) && !IS_ENABLED(CONFIG_GPS_SIM)) {
+		LOG_INF("GPS not enabled, skipping GPS init");
+		return 0;
 	}
 
 	app_work_q = work_q;
@@ -154,8 +175,17 @@ int gps_control_init(struct k_work_q *work_q, gps_event_handler_t handler)
 		return err;
 	}
 
-	k_delayed_work_init(&start_work, start);
-	k_delayed_work_init(&stop_work, stop);
+	k_work_init_delayable(&start_work, start);
+	k_work_init_delayable(&stop_work, stop);
+
+#if !defined(CONFIG_GPS_SIM)
+	gps_reporting_interval_seconds =
+		IS_ENABLED(CONFIG_GPS_START_ON_MOTION) ?
+		CONFIG_GPS_CONTROL_FIX_CHECK_OVERDUE :
+		CONFIG_GPS_CONTROL_FIX_CHECK_INTERVAL;
+#else
+	gps_reporting_interval_seconds = CONFIG_GPS_CONTROL_FIX_CHECK_INTERVAL;
+#endif
 
 	LOG_INF("GPS initialized");
 

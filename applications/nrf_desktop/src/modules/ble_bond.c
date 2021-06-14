@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2019 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 #include <stdlib.h>
@@ -10,11 +10,12 @@
 #include <settings/settings.h>
 
 #define MODULE ble_bond
-#include "module_state_event.h"
-#include "click_event.h"
-#include "ble_event.h"
+#include <caf/events/module_state_event.h>
+#include <caf/events/click_event.h>
+#include <caf/events/ble_common_event.h>
 #include "selector_event.h"
 #include "config_event.h"
+#include <caf/events/power_event.h>
 
 #include <logging/log.h>
 LOG_MODULE_REGISTER(MODULE, CONFIG_DESKTOP_BLE_BOND_LOG_LEVEL);
@@ -22,20 +23,30 @@ LOG_MODULE_REGISTER(MODULE, CONFIG_DESKTOP_BLE_BOND_LOG_LEVEL);
 #define CONFIRM_TIMEOUT			K_SECONDS(10)
 #define ERASE_ADV_TIMEOUT		K_SECONDS(30)
 
+#if CONFIG_DESKTOP_BLE_ENABLE_PASSKEY
+ #define ERASE_ADV_NEW_CONN_TIMEOUT_MS	30000
+#else
+ #define ERASE_ADV_NEW_CONN_TIMEOUT_MS	5000
+#endif
+#define ERASE_ADV_NEW_CONN_TIMEOUT	K_MSEC(ERASE_ADV_NEW_CONN_TIMEOUT_MS)
+
 #define PEER_ID_STORAGE_NAME		"peer_id"
 #define BT_ID_LUT_STORAGE_NAME		"bt_lut"
 
 #define ON_START_CLICK(CLICK)		(CLICK + CLICK_COUNT)
-#define ON_START_CLICK_UPTIME_MAX	K_SECONDS(6)
+#define ON_START_CLICK_UPTIME_MAX	(6 * MSEC_PER_SEC)
 
 
 enum state {
 	STATE_DISABLED,
+	STATE_DISABLED_STANDBY,
 	STATE_IDLE,
+	STATE_STANDBY,
 	STATE_ERASE_PEER,
 	STATE_ERASE_ADV,
 	STATE_SELECT_PEER,
-	STATE_DONGLE_CONN
+	STATE_DONGLE_CONN,
+	STATE_DONGLE_CONN_STANDBY
 };
 
 struct state_switch {
@@ -97,10 +108,11 @@ const static char * const opt_descr[] = {
 };
 
 static enum state state;
-static u8_t cur_peer_id;
+static uint8_t cur_peer_id;
 static bool cur_peer_id_valid;
-static u8_t tmp_peer_id;
+static uint8_t tmp_peer_id;
 static bool dongle_peer_selected_on_init;
+static bool erase_adv_was_extended;
 
 
 #if CONFIG_BT_PERIPHERAL
@@ -111,7 +123,7 @@ static bool dongle_peer_selected_on_init;
 #error Device must be Bluetooth peripheral or central.
 #endif
 
-static u8_t bt_stack_id_lut[BT_STACK_ID_LUT_SIZE];
+static uint8_t bt_stack_id_lut[BT_STACK_ID_LUT_SIZE];
 static bool bt_stack_id_lut_valid;
 
 #define TEMP_PEER_ID (CONFIG_BT_MAX_PAIRED - 1)
@@ -122,7 +134,7 @@ static bool bt_stack_id_lut_valid;
 #endif
 
 
-static struct k_delayed_work timeout;
+static struct k_work_delayable timeout;
 
 static int settings_set(const char *key, size_t len_rd,
 			settings_read_cb read_cb, void *cb_arg)
@@ -177,7 +189,7 @@ SETTINGS_STATIC_HANDLER_DEFINE(ble_bond, MODULE_NAME, NULL, settings_set, NULL,
 			       NULL);
 #endif /* CONFIG_BT_PERIPHERAL */
 
-static u8_t get_bt_stack_peer_id(u8_t id)
+static uint8_t get_bt_stack_peer_id(uint8_t id)
 {
 	if (IS_ENABLED(CONFIG_BT_PERIPHERAL)) {
 		if ((state == STATE_ERASE_PEER) ||
@@ -225,7 +237,7 @@ static void swap_bt_stack_peer_id(void)
 			bt_stack_id_lut[0] = 1;
 		}
 	}
-	u8_t temp = bt_stack_id_lut[TEMP_PEER_ID];
+	uint8_t temp = bt_stack_id_lut[TEMP_PEER_ID];
 
 	bt_stack_id_lut[TEMP_PEER_ID] = bt_stack_id_lut[cur_peer_id];
 	bt_stack_id_lut[cur_peer_id] = temp;
@@ -238,7 +250,7 @@ static void swap_bt_stack_peer_id(void)
 	}
 }
 
-static int remove_peers(u8_t identity)
+static int remove_peers(uint8_t identity)
 {
 	LOG_INF("Remove peers on identity %u", identity);
 
@@ -265,7 +277,7 @@ static int shell_show_peers(const struct shell *shell, size_t argc, char **argv)
 
 	char addr_str[BT_ADDR_LE_STR_LEN];
 	bt_addr_le_t addrs[CONFIG_BT_ID_MAX];
-	size_t count;
+	size_t count = CONFIG_BT_ID_MAX;
 
 	bt_id_get(addrs, &count);
 	for (size_t i = 0; i < count; i++) {
@@ -287,7 +299,8 @@ static void cancel_operation(void)
 {
 	LOG_INF("Cancel peer operation");
 
-	k_delayed_work_cancel(&timeout);
+	/* Cancel cannot fail if executed from another work's context. */
+	(void)k_work_cancel_delayable(&timeout);
 
 	struct ble_peer_operation_event *event = new_ble_peer_operation_event();
 
@@ -302,7 +315,7 @@ static void cancel_operation(void)
 	EVENT_SUBMIT(event);
 }
 
-static u8_t next_peer_id(u8_t id)
+static uint8_t next_peer_id(uint8_t id)
 {
 	id++;
 	BUILD_ASSERT(TEMP_PEER_ID == (CONFIG_BT_MAX_PAIRED - 1));
@@ -345,7 +358,7 @@ static void select_next(void)
 	EVENT_SUBMIT(event);
 }
 
-static int store_peer_id(u8_t peer_id)
+static int store_peer_id(uint8_t peer_id)
 {
 	if (IS_ENABLED(CONFIG_SETTINGS)) {
 		char key[] = MODULE_NAME "/" PEER_ID_STORAGE_NAME;
@@ -454,6 +467,7 @@ static void erase_adv_confirm(void)
 		return;
 	}
 	LOG_INF("Start advertising for peer erase");
+	erase_adv_was_extended = false;
 
 	struct ble_peer_operation_event *event = new_ble_peer_operation_event();
 
@@ -466,7 +480,12 @@ static void erase_adv_confirm(void)
 
 static void select_dongle_peer(void)
 {
-	state = STATE_DONGLE_CONN;
+	if (state == STATE_IDLE) {
+		state = STATE_DONGLE_CONN;
+	} else {
+		__ASSERT_NO_MSG(state == STATE_STANDBY);
+		state = STATE_DONGLE_CONN_STANDBY;
+	}
 
 	LOG_INF("Selected dongle peer");
 	struct ble_peer_operation_event *event = new_ble_peer_operation_event();
@@ -484,7 +503,14 @@ static void select_dongle_peer(void)
 static void select_ble_peers(void)
 {
 	LOG_INF("Selected BLE peers");
-	state = STATE_IDLE;
+	if (state == STATE_DONGLE_CONN) {
+		state = STATE_IDLE;
+	} else if (state == STATE_DONGLE_CONN_STANDBY) {
+		state = STATE_STANDBY;
+	} else {
+		__ASSERT_NO_MSG((state == STATE_STANDBY) ||
+				(state == STATE_IDLE));
+	}
 
 	struct ble_peer_operation_event *event = new_ble_peer_operation_event();
 
@@ -507,7 +533,7 @@ static void handle_click(enum click click)
 				state = state_switch[i].next_state;
 
 				if (state != STATE_IDLE) {
-					s32_t work_delay;
+					k_timeout_t work_delay;
 
 					if (state == STATE_ERASE_ADV) {
 						work_delay = ERASE_ADV_TIMEOUT;
@@ -515,10 +541,13 @@ static void handle_click(enum click click)
 						work_delay = CONFIRM_TIMEOUT;
 					}
 
-					k_delayed_work_submit(&timeout,
+					k_work_reschedule(&timeout,
 							      work_delay);
 				} else {
-					k_delayed_work_cancel(&timeout);
+					/* Cancel cannot fail if executed from another work's
+					 * context.
+					 */
+					(void)k_work_cancel_delayable(&timeout);
 				}
 
 				return;
@@ -526,14 +555,18 @@ static void handle_click(enum click click)
 		}
 	}
 
-	if (state != STATE_DONGLE_CONN) {
+	if ((state == STATE_ERASE_PEER) ||
+	    (state == STATE_ERASE_ADV) ||
+	    (state == STATE_SELECT_PEER)) {
 		cancel_operation();
 	}
 }
 
 static void timeout_handler(struct k_work *work)
 {
-	__ASSERT_NO_MSG(state != STATE_DISABLED);
+	__ASSERT_NO_MSG((state == STATE_ERASE_PEER) ||
+			(state == STATE_ERASE_ADV) ||
+			(state == STATE_SELECT_PEER));
 
 	cancel_operation();
 }
@@ -669,10 +702,14 @@ static int init(void)
 {
 	silence_unused();
 
-	state = STATE_IDLE;
+	if (state == STATE_DISABLED) {
+		state = STATE_IDLE;
+	} else {
+		state = STATE_STANDBY;
+	}
 
 	if (IS_ENABLED(CONFIG_DESKTOP_BLE_PEER_CONTROL)) {
-		k_delayed_work_init(&timeout, timeout_handler);
+		k_work_init_delayable(&timeout, timeout_handler);
 	}
 
 	load_identities();
@@ -691,6 +728,68 @@ static int init(void)
 	}
 
 	return 0;
+}
+
+static bool ble_peer_event_handler(const struct ble_peer_event *event)
+{
+	if (state != STATE_ERASE_ADV) {
+		return false;
+	}
+
+	if (event->state == PEER_STATE_CONNECTED) {
+		/* Ensure that connected peer will have time to establish
+		 * security.
+		 */
+		uint32_t remains = k_ticks_to_ms_ceil32(k_work_delayable_remaining_get(&timeout));
+
+		if ((remains < ERASE_ADV_NEW_CONN_TIMEOUT_MS) &&
+		    !erase_adv_was_extended) {
+			k_work_reschedule(&timeout,
+					      ERASE_ADV_NEW_CONN_TIMEOUT);
+			erase_adv_was_extended = true;
+		}
+	} else if (event->state == PEER_STATE_SECURED) {
+		/* Ignore secured for previous local id. */
+		struct bt_conn_info bt_info;
+		int err = bt_conn_get_info(event->id, &bt_info);
+
+		if (err) {
+			LOG_ERR("Cannot get conn info");
+			module_set_state(MODULE_STATE_ERROR);
+			return false;
+		}
+
+		if (bt_info.id != get_bt_stack_peer_id(cur_peer_id)) {
+			LOG_INF("Connection for old id - ignored");
+			int err = bt_conn_disconnect(event->id,
+					BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+
+			if (err && (err != -ENOTCONN)) {
+				LOG_ERR("Cannot disconnect peer (err=%d)", err);
+				module_set_state(MODULE_STATE_ERROR);
+			}
+
+			return false;
+		}
+
+		LOG_INF("Erased peer");
+		swap_bt_stack_peer_id();
+
+		state = STATE_IDLE;
+
+		struct ble_peer_operation_event *event =
+			new_ble_peer_operation_event();
+
+		event->op = PEER_OPERATION_ERASED;
+		event->bt_app_id = cur_peer_id;
+		event->bt_stack_id = get_bt_stack_peer_id(cur_peer_id);
+
+		EVENT_SUBMIT(event);
+		/* Cancel cannot fail if executed from another work's context. */
+		(void)k_work_cancel_delayable(&timeout);
+	}
+
+	return false;
 }
 
 static bool click_event_handler(const struct click_event *event)
@@ -720,9 +819,11 @@ static void selector_event_handler(const struct selector_event *event)
 	if (event->position == CONFIG_DESKTOP_BLE_DONGLE_PEER_SELECTOR_POS) {
 		switch (state) {
 		case STATE_DISABLED:
+		case STATE_DISABLED_STANDBY:
 			dongle_peer_selected_on_init = true;
 			break;
 		case STATE_DONGLE_CONN:
+		case STATE_DONGLE_CONN_STANDBY:
 			/* Ignore */
 			break;
 		case STATE_ERASE_PEER:
@@ -731,6 +832,7 @@ static void selector_event_handler(const struct selector_event *event)
 			cancel_operation();
 			/* Fall-through */
 		case STATE_IDLE:
+		case STATE_STANDBY:
 			select_dongle_peer();
 			break;
 		default:
@@ -743,6 +845,7 @@ static void selector_event_handler(const struct selector_event *event)
 			dongle_peer_selected_on_init = false;
 			break;
 		case STATE_IDLE:
+		case STATE_STANDBY:
 			/* Ignore */
 			break;
 		case STATE_ERASE_PEER:
@@ -751,6 +854,7 @@ static void selector_event_handler(const struct selector_event *event)
 			cancel_operation();
 			/* Fall-through */
 		case STATE_DONGLE_CONN:
+		case STATE_DONGLE_CONN_STANDBY:
 			select_ble_peers();
 			break;
 		default:
@@ -760,7 +864,7 @@ static void selector_event_handler(const struct selector_event *event)
 	}
 }
 
-static void config_set(const u8_t opt_id, const u8_t *data, const size_t size)
+static void config_set(const uint8_t opt_id, const uint8_t *data, const size_t size)
 {
 	ARG_UNUSED(data);
 	ARG_UNUSED(size);
@@ -785,6 +889,10 @@ static void config_set(const u8_t opt_id, const u8_t *data, const size_t size)
 		if (IS_ENABLED(CONFIG_BT_PERIPHERAL)) {
 			erase_adv_confirm();
 			state = STATE_ERASE_ADV;
+
+			k_work_reschedule(&timeout,
+					      ERASE_ADV_TIMEOUT);
+
 		} else if (IS_ENABLED(CONFIG_BT_CENTRAL)) {
 			erase_confirm();
 		}
@@ -796,9 +904,87 @@ static void config_set(const u8_t opt_id, const u8_t *data, const size_t size)
 	};
 }
 
-static void config_fetch(const u8_t opt_id, u8_t *data, size_t *size)
+static void config_fetch(const uint8_t opt_id, uint8_t *data, size_t *size)
 {
 	LOG_WRN("Config fetch is not supported");
+}
+
+static bool handle_power_down_event(const struct power_down_event *event)
+{
+	switch (state) {
+	case STATE_DISABLED:
+		state = STATE_DISABLED_STANDBY;
+		break;
+
+	case STATE_ERASE_PEER:
+	case STATE_ERASE_ADV:
+	case STATE_SELECT_PEER:
+		cancel_operation();
+		/* Fall-through */
+
+	case STATE_IDLE:
+		state = STATE_STANDBY;
+		module_set_state(MODULE_STATE_OFF);
+		break;
+
+	case STATE_DONGLE_CONN:
+		state = STATE_DONGLE_CONN_STANDBY;
+		module_set_state(MODULE_STATE_OFF);
+		break;
+
+	case STATE_STANDBY:
+		/* Fall-through */
+	case STATE_DISABLED_STANDBY:
+		/* Fall-through */
+	case STATE_DONGLE_CONN_STANDBY:
+		/* No action. */
+		break;
+
+	default:
+		__ASSERT_NO_MSG(false);
+		break;
+	}
+
+	return false;
+}
+
+static bool handle_wake_up_event(const struct wake_up_event *event)
+{
+	switch (state) {
+	case STATE_DISABLED_STANDBY:
+		state = STATE_DISABLED;
+		break;
+
+	case STATE_STANDBY:
+		state = STATE_IDLE;
+		module_set_state(MODULE_STATE_READY);
+		break;
+
+	case STATE_DONGLE_CONN_STANDBY:
+		state = STATE_DONGLE_CONN;
+		module_set_state(MODULE_STATE_READY);
+		break;
+
+	case STATE_DISABLED:
+		/* Fall-through */
+	case STATE_IDLE:
+		/* Fall-through */
+	case STATE_ERASE_PEER:
+		/* Fall-through */
+	case STATE_ERASE_ADV:
+		/* Fall-through */
+	case STATE_SELECT_PEER:
+		/* Fall-through */
+	case STATE_DONGLE_CONN:
+		/* No action. */
+		break;
+
+	default:
+		__ASSERT_NO_MSG(false);
+		break;
+	}
+
+	return false;
 }
 
 static bool event_handler(const struct event_header *eh)
@@ -807,12 +993,18 @@ static bool event_handler(const struct event_header *eh)
 		const struct module_state_event *event =
 			cast_module_state_event(eh);
 
-		if (check_state(event, MODULE_ID(settings_load),
+		if (check_state(event, MODULE_ID(settings_loader),
 				MODULE_STATE_READY)) {
-			__ASSERT_NO_MSG(state == STATE_DISABLED);
+			__ASSERT_NO_MSG((state == STATE_DISABLED) ||
+					(state == STATE_DISABLED_STANDBY));
 
-			if (!init()) {
+			int err = init();
+
+			if (!err) {
 				module_set_state(MODULE_STATE_READY);
+				if (state == STATE_STANDBY) {
+					module_set_state(MODULE_STATE_OFF);
+				}
 			} else {
 				module_set_state(MODULE_STATE_ERROR);
 			}
@@ -821,48 +1013,9 @@ static bool event_handler(const struct event_header *eh)
 		return false;
 	}
 
-	if (is_ble_peer_event(eh)) {
-		const struct ble_peer_event *event = cast_ble_peer_event(eh);
-
-		if ((state == STATE_ERASE_ADV) &&
-		    (event->state == PEER_STATE_SECURED)) {
-			/* Ignore secured for previous local id. */
-			struct bt_conn_info bt_info;
-			int err = bt_conn_get_info(event->id, &bt_info);
-
-			if (err) {
-				LOG_ERR("Cannot get conn info");
-				module_set_state(MODULE_STATE_ERROR);
-				return false;
-			}
-
-			if (bt_info.id != get_bt_stack_peer_id(cur_peer_id)) {
-				LOG_INF("Connection for old id - ignored");
-				bt_conn_disconnect(event->id,
-					BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-
-				 return false;
-			}
-
-			LOG_INF("Erased peer");
-			if (IS_ENABLED(CONFIG_BT_PERIPHERAL)) {
-				swap_bt_stack_peer_id();
-			}
-
-			state = STATE_IDLE;
-
-			struct ble_peer_operation_event *event =
-				new_ble_peer_operation_event();
-
-			event->op = PEER_OPERATION_ERASED;
-			event->bt_app_id = cur_peer_id;
-			event->bt_stack_id = get_bt_stack_peer_id(cur_peer_id);
-
-			EVENT_SUBMIT(event);
-			k_delayed_work_cancel(&timeout);
-		}
-
-		return false;
+	if (IS_ENABLED(CONFIG_BT_PERIPHERAL) &&
+	    is_ble_peer_event(eh)) {
+		return ble_peer_event_handler(cast_ble_peer_event(eh));
 	}
 
 	if (IS_ENABLED(CONFIG_DESKTOP_BLE_PEER_CONTROL) &&
@@ -876,8 +1029,18 @@ static bool event_handler(const struct event_header *eh)
 		return false;
 	}
 
+	if (IS_ENABLED(CONFIG_DESKTOP_POWER_MANAGER_ENABLE) &&
+	    is_power_down_event(eh)) {
+		return handle_power_down_event(cast_power_down_event(eh));
+	}
+
+	if (IS_ENABLED(CONFIG_DESKTOP_POWER_MANAGER_ENABLE) &&
+	    is_wake_up_event(eh)) {
+		return handle_wake_up_event(cast_wake_up_event(eh));
+	}
+
 	GEN_CONFIG_EVENT_HANDLERS(STRINGIFY(MODULE), opt_descr, config_set,
-				  config_fetch, false);
+				  config_fetch);
 
 	/* If event is unhandled, unsubscribe. */
 	__ASSERT_NO_MSG(false);
@@ -886,10 +1049,11 @@ static bool event_handler(const struct event_header *eh)
 }
 EVENT_LISTENER(MODULE, event_handler);
 EVENT_SUBSCRIBE(MODULE, module_state_event);
+#if CONFIG_BT_PERIPHERAL
 EVENT_SUBSCRIBE(MODULE, ble_peer_event);
+#endif
 #if CONFIG_DESKTOP_CONFIG_CHANNEL_ENABLE
-EVENT_SUBSCRIBE(MODULE, config_event);
-EVENT_SUBSCRIBE(MODULE, config_fetch_request_event);
+EVENT_SUBSCRIBE_EARLY(MODULE, config_event);
 #endif
 #if CONFIG_DESKTOP_BLE_PEER_CONTROL
 EVENT_SUBSCRIBE(MODULE, click_event);
@@ -897,6 +1061,8 @@ EVENT_SUBSCRIBE(MODULE, click_event);
 #if CONFIG_DESKTOP_BLE_DONGLE_PEER_ENABLE
 EVENT_SUBSCRIBE(MODULE, selector_event);
 #endif
+EVENT_SUBSCRIBE(MODULE, power_down_event);
+EVENT_SUBSCRIBE(MODULE, wake_up_event);
 
 #if CONFIG_SHELL
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_peers,

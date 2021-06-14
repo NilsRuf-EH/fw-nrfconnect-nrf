@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2019 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 #include <stdio.h>
@@ -44,10 +44,11 @@ static int entropy_func(void *ctx, unsigned char *buf, size_t len)
 	return entropy_get_entropy(ctx, buf, len);
 }
 
-#if defined(CONFIG_MBEDTLS_CTR_DRBG_ENABLED)
-mbedtls_ctr_drbg_context ctr_drbg_ctx;
+#if defined(MBEDTLS_CTR_DRBG_C)
+mbedtls_ctr_drbg_context drbg_ctx;
+int (*drbg_random)(void *, unsigned char *, size_t) = &mbedtls_ctr_drbg_random;
 
-int init_ctr_drbg(const unsigned char *p_optional_seed, size_t len)
+int init_drbg(const unsigned char *p_optional_seed, size_t len)
 {
 	static const unsigned char ncs_seed[] = "ncs_drbg_seed";
 
@@ -60,14 +61,52 @@ int init_ctr_drbg(const unsigned char *p_optional_seed, size_t len)
 		p_seed = p_optional_seed;
 	}
 
-	struct device *p_device = device_get_binding(CONFIG_ENTROPY_NAME);
-	if (p_device == NULL) {
+	const struct device *p_device =
+	    device_get_binding(DT_LABEL(DT_CHOSEN(zephyr_entropy)));
+
+	if (p_device == NULL)
 		return -ENODEV;
+
+	// Ensure previously run test is properly deallocated
+	// (This frees the mutex inside ctr_drbg context)
+	mbedtls_ctr_drbg_free(&drbg_ctx);
+	mbedtls_ctr_drbg_init(&drbg_ctx);
+	return mbedtls_ctr_drbg_seed(&drbg_ctx, entropy_func, (void *)p_device,
+				     p_seed, len);
+}
+#elif defined(MBEDTLS_HMAC_DRBG_C)
+mbedtls_hmac_drbg_context drbg_ctx;
+int (*drbg_random)(void *, unsigned char *, size_t) = &mbedtls_hmac_drbg_random;
+
+int init_drbg(const unsigned char *p_optional_seed, size_t len)
+{
+	static const unsigned char ncs_seed[] = "ncs_drbg_seed";
+
+	const unsigned char *p_seed;
+
+	if (p_optional_seed == NULL) {
+		p_seed = ncs_seed;
+		len = sizeof(ncs_seed);
+	} else {
+		p_seed = p_optional_seed;
 	}
 
-	mbedtls_ctr_drbg_init(&ctr_drbg_ctx);
-	return mbedtls_ctr_drbg_seed(&ctr_drbg_ctx, entropy_func, p_device,
-				     p_seed, len);
+	// Ensure previously run test is properly deallocated
+	// (This frees the mutex inside hmac_drbg context)
+	mbedtls_hmac_drbg_free(&drbg_ctx);
+	mbedtls_hmac_drbg_init(&drbg_ctx);
+
+	const struct device *p_device =
+	    device_get_binding(DT_LABEL(DT_CHOSEN(zephyr_entropy)));
+
+	if (!p_device)
+		return -ENODEV;
+
+	const mbedtls_md_info_t *p_info =
+		mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+
+	return mbedtls_hmac_drbg_seed(&drbg_ctx, p_info, entropy_func,
+		(void *)p_device, p_seed, len);
 }
 #endif
 
@@ -88,12 +127,19 @@ uint32_t get_vector_count(const test_case_t *tc)
 	       test_vector_sizes[tc->vector_type];
 }
 
-void start_time_measurement(void)
+size_t hex2bin_safe(const char *hex, uint8_t *buf, size_t buflen)
+{
+	return hex == NULL ? 0 : hex2bin(hex, strlen(hex), buf, buflen);
+}
+
+/* Weak definition, user overridable */
+__weak void start_time_measurement(void)
 {
 	;
 }
 
-void stop_time_measurement(void)
+/* Weak definition, user overridable */
+__weak void stop_time_measurement(void)
 {
 	;
 }

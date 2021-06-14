@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2018 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 /**
@@ -18,11 +18,11 @@
 #include <sys/util.h>
 #include <sys/byteorder.h>
 
-#include "button_event.h"
+#include <caf/events/button_event.h>
 #include "motion_event.h"
 #include "wheel_event.h"
 #include "hid_event.h"
-#include "ble_event.h"
+#include <caf/events/ble_common_event.h>
 #include "usb_event.h"
 
 #include "hid_keymap.h"
@@ -30,7 +30,7 @@
 #include "hid_report_desc.h"
 
 #define MODULE hid_state
-#include "module_state_event.h"
+#include <caf/events/module_state_event.h>
 
 #include <logging/log.h>
 LOG_MODULE_REGISTER(MODULE, CONFIG_DESKTOP_HID_STATE_LOG_LEVEL);
@@ -43,38 +43,51 @@ enum state {
 	STATE_CONNECTED_BUSY	/**< Connected, report is generated. */
 };
 
-#define SUBSCRIBER_COUNT (IS_ENABLED(CONFIG_DESKTOP_HIDS_ENABLE) + \
-			  IS_ENABLED(CONFIG_DESKTOP_USB_ENABLE))
+#ifndef CONFIG_USB_HID_DEVICE_COUNT
+  #define CONFIG_USB_HID_DEVICE_COUNT	0
+#endif
 
-#define INPUT_REPORT_COUNT (IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_MOUSE_SUPPORT) +	\
-			    IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_KEYBOARD_SUPPORT) +	\
-			    IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_SYSTEM_CTRL_SUPPORT) +	\
-			    IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_CONSUMER_CTRL_SUPPORT))
+#define SUBSCRIBER_COUNT (IS_ENABLED(CONFIG_DESKTOP_HIDS_ENABLE) + \
+			  CONFIG_USB_HID_DEVICE_COUNT)
+
+#define INPUT_REPORT_DATA_COUNT (IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_MOUSE_SUPPORT) +		\
+				 IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_KEYBOARD_SUPPORT) +	\
+				 IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_SYSTEM_CTRL_SUPPORT) +	\
+				 IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_CONSUMER_CTRL_SUPPORT))
+
+#define INPUT_REPORT_STATE_COUNT (IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_MOUSE_SUPPORT) +		\
+				  IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_KEYBOARD_SUPPORT) +	\
+				  IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_SYSTEM_CTRL_SUPPORT) +	\
+				  IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_CONSUMER_CTRL_SUPPORT) +	\
+				  IS_ENABLED(CONFIG_DESKTOP_HID_BOOT_INTERFACE_MOUSE) +		\
+				  IS_ENABLED(CONFIG_DESKTOP_HID_BOOT_INTERFACE_KEYBOARD))
 
 #define ITEM_COUNT MAX(MAX(MOUSE_REPORT_BUTTON_COUNT_MAX,	\
 			   KEYBOARD_REPORT_KEY_COUNT_MAX),	\
 		       MAX(SYSTEM_CTRL_REPORT_KEY_COUNT_MAX,	\
 			   CONSUMER_CTRL_REPORT_KEY_COUNT_MAX))
 
+#define AXIS_COUNT (IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_MOUSE_SUPPORT) * MOUSE_REPORT_AXIS_COUNT)
+
+
 /**@brief HID state item. */
 struct item {
-	u16_t usage_id;		/**< HID usage ID. */
-	s16_t value;		/**< HID value. */
+	uint16_t usage_id; /**< HID usage ID. */
+	int16_t value; /**< HID value. */
 };
 
 /**@brief Structure keeping state for a single target HID report. */
 struct items {
-	u8_t item_count_max;
-	u8_t item_count;
-	struct item item[ITEM_COUNT];
-	bool update_needed;
+	uint8_t item_count_max; /**< Maximal numer of items in this set. */
+	uint8_t item_count; /**< Current number of items in this set. */
+	struct item item[ITEM_COUNT]; /**< Items set. Browse from the end. */
 };
 
 /**@brief Enqueued HID state item. */
 struct item_event {
-	sys_snode_t node;	/**< Event queue linked list node. */
-	struct item item;	/**< HID state item which has been enqueued. */
-	u32_t timestamp;	/**< HID event timestamp. */
+	sys_snode_t node; /**< Event queue linked list node. */
+	struct item item; /**< HID state item which has been enqueued. */
+	uint32_t timestamp; /**< HID event timestamp. */
 };
 
 /**@brief Event queue. */
@@ -83,36 +96,49 @@ struct eventq {
 	size_t len;
 };
 
-/**@brief Report state. */
+/**@brief Axis data. */
+struct axis_data {
+	int16_t axis[AXIS_COUNT]; /**< Array of axes. */
+	uint8_t axis_count; /**< Number of axes in this array. */
+};
+
 struct report_data {
 	struct items items;
 	struct eventq eventq;
+	struct axis_data axes;
+	bool update_needed;
+	struct report_state *linked_rs;
 };
 
 struct report_state {
 	enum state state;
-	unsigned int cnt;
+	uint8_t cnt;
+	uint8_t report_id;
+	struct subscriber *subscriber;
+	struct report_data *linked_rd;
 };
 
 struct subscriber {
 	const void *id;
 	bool is_usb;
-	struct report_state state[INPUT_REPORT_COUNT];
+	uint8_t report_max;
+	uint8_t report_cnt;
+	struct report_state state[INPUT_REPORT_STATE_COUNT];
 };
 
 /**@brief HID state structure. */
 struct hid_state {
-	struct report_data report_data[INPUT_REPORT_COUNT];
+	struct report_data report_data[INPUT_REPORT_DATA_COUNT];
 	struct subscriber subscriber[SUBSCRIBER_COUNT];
-	struct subscriber *selected;
-	s32_t wheel_acc;
-	s16_t last_dx;
-	s16_t last_dy;
 };
 
 
-static u8_t report_index[REPORT_ID_COUNT];
+static uint8_t report_data_index[REPORT_ID_COUNT];
+static uint8_t report_state_index[REPORT_ID_COUNT];
 static struct hid_state state;
+
+
+static bool report_send(struct report_data *rd, bool check_state, bool send_always);
 
 
 /**@brief Binary search. Input array must be already sorted.
@@ -120,7 +146,7 @@ static struct hid_state state;
  * bsearch is also available from newlib libc, but including
  * the library takes around 10K of FLASH.
  */
-static void *bsearch(const void *key, const u8_t *base,
+static void *bsearch(const void *key, const uint8_t *base,
 			 size_t elem_num, size_t elem_size,
 			 int (*compare)(const void *, const void *))
 {
@@ -162,14 +188,14 @@ static int hid_keymap_compare(const void *a, const void *b)
 }
 
 /**@brief Translate Key ID to HID Usage ID and target report. */
-static struct hid_keymap *hid_keymap_get(u16_t key_id)
+static struct hid_keymap *hid_keymap_get(uint16_t key_id)
 {
 	struct hid_keymap key = {
 		.key_id = key_id
 	};
 
 	struct hid_keymap *map = bsearch(&key,
-					 (u8_t *)hid_keymap,
+					 (uint8_t *)hid_keymap,
 					 ARRAY_SIZE(hid_keymap),
 					 sizeof(key),
 					 hid_keymap_compare);
@@ -229,18 +255,20 @@ static struct item_event *eventq_get(struct eventq *eventq)
 	return CONTAINER_OF(node, struct item_event, node);
 }
 
-static void eventq_append(struct eventq *eventq, u16_t usage_id, s16_t value)
+static void eventq_append(struct eventq *eventq, uint16_t usage_id, int16_t value)
 {
 	struct item_event *hid_event = k_malloc(sizeof(*hid_event));
 
 	if (!hid_event) {
-		LOG_WRN("Failed to allocate HID event");
+		LOG_ERR("Failed to allocate HID event");
+		/* Should never happen. */
+		__ASSERT_NO_MSG(false);
 		return;
 	}
 
 	hid_event->item.usage_id = usage_id;
 	hid_event->item.value = value;
-	hid_event->timestamp = K_MSEC(k_uptime_get());
+	hid_event->timestamp = k_uptime_get_32();
 
 	/* Add a new event to the queue. */
 	sys_slist_append(&eventq->root, &hid_event->node);
@@ -272,14 +300,14 @@ static void eventq_region_purge(struct eventq *eventq,
 }
 
 
-static void eventq_cleanup(struct eventq *eventq, u32_t timestamp)
+static void eventq_cleanup(struct eventq *eventq, uint32_t timestamp)
 {
 	/* Find timed out events. */
 
 	sys_snode_t *first_valid;
 
 	SYS_SLIST_FOR_EACH_NODE(&eventq->root, first_valid) {
-		u32_t diff = timestamp - CONTAINER_OF(
+		uint32_t diff = timestamp - CONTAINER_OF(
 			first_valid, struct item_event, node)->timestamp;
 
 		if (diff < CONFIG_DESKTOP_HID_REPORT_EXPIRATION) {
@@ -386,7 +414,45 @@ static void clear_items(struct items *items)
 {
 	memset(items->item, 0, sizeof(items->item));
 	items->item_count = 0;
-	items->update_needed = false;
+}
+
+static void clear_axes(struct axis_data *axes)
+{
+	memset(axes->axis, 0, sizeof(axes->axis));
+}
+
+static void clear_report_data(struct report_data *rd)
+{
+	LOG_INF("Clear report data (%p)", (void *)rd);
+
+	clear_axes(&rd->axes);
+	clear_items(&rd->items);
+	eventq_reset(&rd->eventq);
+
+	rd->update_needed = false;
+}
+
+static struct report_state *get_report_state(struct subscriber *subscriber,
+					     uint8_t report_id)
+{
+	__ASSERT_NO_MSG(subscriber);
+
+	size_t pos = report_state_index[report_id];
+
+	if (pos < ARRAY_SIZE(subscriber->state)) {
+		return &subscriber->state[pos];
+	}
+
+	return NULL;
+}
+
+static struct report_data *get_report_data(uint8_t report_id)
+{
+	size_t pos = report_data_index[report_id];
+
+	__ASSERT_NO_MSG(pos < ARRAY_SIZE(state.report_data));
+
+	return &state.report_data[pos];
 }
 
 static struct subscriber *get_subscriber(const void *subscriber_id)
@@ -400,93 +466,9 @@ static struct subscriber *get_subscriber(const void *subscriber_id)
 	return NULL;
 }
 
-static struct subscriber *get_subscriber_by_type(bool is_usb)
+static bool key_value_set(struct items *items, uint16_t usage_id, int16_t value)
 {
-	for (size_t i = 0; i < ARRAY_SIZE(state.subscriber); i++) {
-		if (state.subscriber[i].id &&
-		    (state.subscriber[i].is_usb == is_usb)) {
-			return &state.subscriber[i];
-		}
-	}
-	LOG_WRN("No subscriber of type %s", (is_usb)?("USB"):("BLE"));
-	return NULL;
-}
-
-static void connect_subscriber(const void *subscriber_id, bool is_usb)
-{
-	for (size_t i = 0; i < ARRAY_SIZE(state.subscriber); i++) {
-		if (!state.subscriber[i].id) {
-			state.subscriber[i].id = subscriber_id;
-			state.subscriber[i].is_usb = is_usb;
-			LOG_INF("Subscriber %p connected", subscriber_id);
-
-			if (!state.selected || is_usb) {
-				state.selected = &state.subscriber[i];
-				LOG_INF("Active subscriber %p",
-					state.selected->id);
-			}
-			return;
-		}
-	}
-	LOG_WRN("Cannot connect subscriber");
-}
-
-static void disconnect_subscriber(const void *subscriber_id)
-{
-	struct subscriber *s = NULL;
-
-	for (size_t i = 0; i < ARRAY_SIZE(state.subscriber); i++) {
-		if (subscriber_id == state.subscriber[i].id) {
-			s = &state.subscriber[i];
-			break;
-		}
-	}
-
-	if (s == NULL) {
-		LOG_WRN("Subscriber %p was not connected", subscriber_id);
-		return;
-	}
-
-	if (s == state.selected) {
-		for (u8_t r_id = 0; r_id < REPORT_ID_COUNT; r_id++) {
-			size_t pos = report_index[r_id];
-
-			if (pos == INPUT_REPORT_COUNT) {
-				continue;
-			}
-
-			struct report_state *rs = &s->state[pos];
-
-			if (rs->state != STATE_DISCONNECTED) {
-				/* Clear state if notification was not
-				 * disabled before disconnection.
-				 */
-				struct report_data *rd = &state.report_data[pos];
-
-				clear_items(&rd->items);
-				eventq_reset(&rd->eventq);
-			}
-		}
-	}
-
-	memset(s, 0, sizeof(*s));
-
-	LOG_INF("Subscriber %p disconnected", subscriber_id);
-
-	if (s == state.selected) {
-		state.selected = get_subscriber_by_type(false);
-
-		if (!state.selected) {
-			LOG_INF("No active subscriber");
-		} else {
-			LOG_INF("Active subscriber %p", state.selected->id);
-		}
-	}
-}
-
-static bool key_value_set(struct items *items, u16_t usage_id, s16_t value)
-{
-	const u8_t prev_item_count = items->item_count;
+	const uint8_t prev_item_count = items->item_count;
 
 	bool update_needed = false;
 	struct item *p_item;
@@ -498,7 +480,7 @@ static bool key_value_set(struct items *items, u16_t usage_id, s16_t value)
 	__ASSERT_NO_MSG(value != 0);
 
 	p_item = bsearch(&usage_id,
-			 (u8_t *)items->item,
+			 (uint8_t *)items->item,
 			 ARRAY_SIZE(items->item),
 			 sizeof(items->item[0]),
 			 usage_id_compare);
@@ -548,14 +530,16 @@ static bool key_value_set(struct items *items, u16_t usage_id, s16_t value)
 		sort_by_usage_id(items->item, ARRAY_SIZE(items->item));
 	}
 
-	items->update_needed = items->update_needed || update_needed;
-
 	return update_needed;
 }
 
-static void send_report_keyboard(u8_t report_id, struct report_data *rd)
+static void send_report_keyboard(uint8_t report_id, struct report_data *rd)
 {
-	__ASSERT_NO_MSG(report_id == REPORT_ID_KEYBOARD_KEYS);
+	__ASSERT_NO_MSG((IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_KEYBOARD_SUPPORT) &&
+			 (report_id == REPORT_ID_KEYBOARD_KEYS)) ||
+			(IS_ENABLED(CONFIG_DESKTOP_HID_BOOT_INTERFACE_KEYBOARD) &&
+			 (report_id == REPORT_ID_BOOT_KEYBOARD)));
+	/* Both normal and boot protocol reports use the same formatting. */
 
 	if (!IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_KEYBOARD_SUPPORT)) {
 		/* Not supported. */
@@ -566,20 +550,20 @@ static void send_report_keyboard(u8_t report_id, struct report_data *rd)
 	/* Keyboard report should contain keys plus one byte for modifier
 	 * and one reserved byte.
 	 */
-	BUILD_ASSERT_MSG(REPORT_SIZE_KEYBOARD_KEYS == KEYBOARD_REPORT_KEY_COUNT_MAX + 2,
+	BUILD_ASSERT(REPORT_SIZE_KEYBOARD_KEYS == KEYBOARD_REPORT_KEY_COUNT_MAX + 2,
 			 "Incorrect keyboard report size");
 
 	/* Encode report. */
 
 	struct hid_report_event *event = new_hid_report_event(sizeof(report_id) + REPORT_SIZE_KEYBOARD_KEYS);
 
-	event->subscriber = state.selected->id;
+	event->subscriber = rd->linked_rs->subscriber->id;
 
 	event->dyndata.data[0] = report_id;
 	event->dyndata.data[2] = 0; /* Reserved byte */
 
-	u8_t modifier_bm = 0;
-	u8_t *keys = &event->dyndata.data[3];
+	uint8_t modifier_bm = 0;
+	uint8_t *keys = &event->dyndata.data[3];
 
 	const size_t max = ARRAY_SIZE(rd->items.item);
 	size_t cnt = 0;
@@ -614,10 +598,10 @@ static void send_report_keyboard(u8_t report_id, struct report_data *rd)
 
 	EVENT_SUBMIT(event);
 
-	rd->items.update_needed = false;
+	rd->update_needed = false;
 }
 
-static void send_report_mouse(u8_t report_id, struct report_data *rd)
+static void send_report_mouse(uint8_t report_id, struct report_data *rd)
 {
 	__ASSERT_NO_MSG(report_id == REPORT_ID_MOUSE);
 
@@ -628,20 +612,20 @@ static void send_report_mouse(u8_t report_id, struct report_data *rd)
 	}
 
 	/* X/Y axis */
-	s16_t dx = MAX(MIN(state.last_dx, MOUSE_REPORT_XY_MAX),
+	int16_t dx = MAX(MIN(rd->axes.axis[MOUSE_REPORT_AXIS_X], MOUSE_REPORT_XY_MAX),
 		       MOUSE_REPORT_XY_MIN);
-	s16_t dy = MAX(MIN(-state.last_dy, MOUSE_REPORT_XY_MAX),
+	int16_t dy = MAX(MIN(-rd->axes.axis[MOUSE_REPORT_AXIS_Y], MOUSE_REPORT_XY_MAX),
 		       MOUSE_REPORT_XY_MIN);
-	state.last_dx -= dx;
-	state.last_dy += dy;
+	rd->axes.axis[MOUSE_REPORT_AXIS_X] -= dx;
+	rd->axes.axis[MOUSE_REPORT_AXIS_Y] += dy;
 
 	/* Wheel */
-	s16_t wheel = MAX(MIN(state.wheel_acc / 2, MOUSE_REPORT_WHEEL_MAX),
+	int16_t wheel = MAX(MIN(rd->axes.axis[MOUSE_REPORT_AXIS_WHEEL] / 2, MOUSE_REPORT_WHEEL_MAX),
 			  MOUSE_REPORT_WHEEL_MIN);
-	state.wheel_acc -= wheel * 2;
+	rd->axes.axis[MOUSE_REPORT_AXIS_WHEEL] -= wheel * 2;
 
 	/* Traverse pressed keys and build mouse buttons bitmask */
-	u8_t button_bm = 0;
+	uint8_t button_bm = 0;
 	for (size_t i = 0; i < ARRAY_SIZE(rd->items.item); i++) {
 		struct item item = rd->items.item[i];
 
@@ -649,7 +633,7 @@ static void send_report_mouse(u8_t report_id, struct report_data *rd)
 			__ASSERT_NO_MSG(item.usage_id <= 8);
 			__ASSERT_NO_MSG(item.value > 0);
 
-			u8_t mask = 1 << (item.usage_id - 1);
+			uint8_t mask = 1 << (item.usage_id - 1);
 
 			button_bm |= mask;
 		}
@@ -657,15 +641,15 @@ static void send_report_mouse(u8_t report_id, struct report_data *rd)
 
 
 	/* Encode report. */
-	BUILD_ASSERT_MSG(REPORT_SIZE_MOUSE == 5, "Invalid report size");
+	BUILD_ASSERT(REPORT_SIZE_MOUSE == 5, "Invalid report size");
 
 	struct hid_report_event *event = new_hid_report_event(sizeof(report_id) + REPORT_SIZE_MOUSE);
 
-	event->subscriber = state.selected->id;
+	event->subscriber = rd->linked_rs->subscriber->id;
 
 	/* Convert to little-endian. */
-	u8_t x_buff[sizeof(dx)];
-	u8_t y_buff[sizeof(dy)];
+	uint8_t x_buff[sizeof(dx)];
+	uint8_t y_buff[sizeof(dy)];
 	sys_put_le16(dx, x_buff);
 	sys_put_le16(dy, y_buff);
 
@@ -679,10 +663,74 @@ static void send_report_mouse(u8_t report_id, struct report_data *rd)
 
 	EVENT_SUBMIT(event);
 
-	rd->items.update_needed = false;
+	if ((rd->axes.axis[MOUSE_REPORT_AXIS_X] != 0) ||
+	    (rd->axes.axis[MOUSE_REPORT_AXIS_Y] != 0) ||
+	    (rd->axes.axis[MOUSE_REPORT_AXIS_WHEEL]  < -1) ||
+	    (rd->axes.axis[MOUSE_REPORT_AXIS_WHEEL]  > 1)) {
+		/* If there is some axis data to send, request report update. */
+		rd->update_needed = true;
+	} else {
+		rd->update_needed = false;
+	}
 }
 
-static void send_report_ctrl(u8_t report_id, struct report_data *rd)
+static void send_report_boot_mouse(uint8_t report_id, struct report_data *rd)
+{
+	__ASSERT_NO_MSG(report_id == REPORT_ID_BOOT_MOUSE);
+
+	if (!IS_ENABLED(CONFIG_DESKTOP_HID_BOOT_INTERFACE_MOUSE)) {
+		/* Not supported. */
+		__ASSERT_NO_MSG(false);
+		return;
+	}
+
+	/* X/Y axis */
+	int8_t dx = MAX(MIN(rd->axes.axis[MOUSE_REPORT_AXIS_X], INT8_MAX), INT8_MIN);
+	int8_t dy = MAX(MIN(-rd->axes.axis[MOUSE_REPORT_AXIS_Y], INT8_MAX), INT8_MIN);
+
+	rd->axes.axis[MOUSE_REPORT_AXIS_X] -= dx;
+	rd->axes.axis[MOUSE_REPORT_AXIS_Y] += dy;
+	rd->axes.axis[MOUSE_REPORT_AXIS_WHEEL] = 0;
+
+	/* Traverse pressed keys and build mouse buttons bitmask */
+	uint8_t button_bm = 0;
+	for (size_t i = 0; i < ARRAY_SIZE(rd->items.item); i++) {
+		struct item item = rd->items.item[i];
+
+		if (item.usage_id) {
+			__ASSERT_NO_MSG(item.usage_id <= 8);
+			__ASSERT_NO_MSG(item.value > 0);
+
+			uint8_t mask = 1 << (item.usage_id - 1);
+
+			button_bm |= mask;
+		}
+	}
+
+
+	size_t report_size = sizeof(report_id) + sizeof(dx) + sizeof(dy) +
+			     sizeof(button_bm);
+	struct hid_report_event *event = new_hid_report_event(report_size);
+
+	event->subscriber = rd->linked_rs->subscriber->id;
+
+	event->dyndata.data[0] = report_id;
+	event->dyndata.data[1] = button_bm;
+	event->dyndata.data[2] = dx;
+	event->dyndata.data[3] = dy;
+
+	EVENT_SUBMIT(event);
+
+	if ((rd->axes.axis[MOUSE_REPORT_AXIS_X] != 0) ||
+	    (rd->axes.axis[MOUSE_REPORT_AXIS_Y] != 0)) {
+		/* If there is some axis data to send, request report update. */
+		rd->update_needed = true;
+	} else {
+		rd->update_needed = false;
+	}
+}
+
+static void send_report_ctrl(uint8_t report_id, struct report_data *rd)
 {
 	size_t report_size = sizeof(report_id);
 
@@ -700,7 +748,7 @@ static void send_report_ctrl(u8_t report_id, struct report_data *rd)
 
 	struct hid_report_event *event = new_hid_report_event(report_size);
 
-	event->subscriber = state.selected->id;
+	event->subscriber = rd->linked_rs->subscriber->id;
 
 	/* Only one item can fit in the consumer control report. */
 	__ASSERT_NO_MSG(report_size == sizeof(report_id) +
@@ -714,15 +762,11 @@ static void send_report_ctrl(u8_t report_id, struct report_data *rd)
 
 	EVENT_SUBMIT(event);
 
-	rd->items.update_needed = false;
+	rd->update_needed = false;
 }
 
-static bool update_report(u8_t report_id)
+static bool update_report(struct report_data *rd)
 {
-	size_t pos = report_index[report_id];
-	__ASSERT_NO_MSG(pos < INPUT_REPORT_COUNT);
-
-	struct report_data *rd = &state.report_data[pos];
 	bool update_needed = false;
 
 	while (!update_needed && !eventq_is_empty(&rd->eventq)) {
@@ -735,68 +779,67 @@ static bool update_report(u8_t report_id)
 					      event->item.usage_id,
 					      event->item.value);
 
+		rd->update_needed = rd->update_needed || update_needed;
+
+
 		k_free(event);
 
 		/* If no item was changed, try next event. */
 	}
 
-	if (report_id == REPORT_ID_MOUSE) {
-		if ((state.last_dx != 0) ||
-		    (state.last_dy != 0) ||
-		    (state.wheel_acc < -1) ||
-		    (state.wheel_acc > 1)) {
-			update_needed = true;
-		}
-	}
-
-	if (rd->items.update_needed) {
+	if (rd->update_needed) {
 		update_needed = true;
 	}
 
 	return update_needed;
 }
 
-static void report_send(u8_t report_id, bool check_state, bool send_always)
+static bool report_send(struct report_data *rd, bool check_state, bool send_always)
 {
-	if (!state.selected) {
-		LOG_WRN("No active subscriber");
-		return;
+	bool report_sent = false;
+
+	if (!rd->linked_rs) {
+		LOG_WRN("No linked report sink");
+		return report_sent;
 	}
 
-	size_t pos = report_index[report_id];
-	__ASSERT_NO_MSG(pos < INPUT_REPORT_COUNT);
-
-	struct report_state *rs = &state.selected->state[pos];
+	struct report_state *rs = rd->linked_rs;
 
 	if (!check_state || (rs->state != STATE_DISCONNECTED)) {
 		unsigned int pipeline_depth;
 
-		if ((state.selected->is_usb) ||
-		    (report_id == REPORT_ID_CONSUMER_CTRL) ||
-		    (report_id == REPORT_ID_SYSTEM_CTRL))  {
+		if ((rs->subscriber->is_usb) ||
+		    (rs->report_id == REPORT_ID_CONSUMER_CTRL) ||
+		    (rs->report_id == REPORT_ID_SYSTEM_CTRL))  {
 			pipeline_depth = 1;
 		} else {
 			pipeline_depth = 2;
 		}
 
 		while ((rs->cnt < pipeline_depth) &&
-		       (update_report(report_id) || send_always)) {
+		       (rs->subscriber->report_cnt < rs->subscriber->report_max) &&
+		       (update_report(rd) || send_always)) {
 
-			switch (report_id) {
+			switch (rs->report_id) {
 			case REPORT_ID_KEYBOARD_KEYS:
-				send_report_keyboard(report_id,
-						     &state.report_data[pos]);
+				send_report_keyboard(rs->report_id, rd);
 				break;
 
 			case REPORT_ID_MOUSE:
-				send_report_mouse(report_id,
-						  &state.report_data[pos]);
+				send_report_mouse(rs->report_id, rd);
 				break;
 
 			case REPORT_ID_SYSTEM_CTRL:
 			case REPORT_ID_CONSUMER_CTRL:
-				send_report_ctrl(report_id,
-						 &state.report_data[pos]);
+				send_report_ctrl(rs->report_id, rd);
+				break;
+
+			case REPORT_ID_BOOT_KEYBOARD:
+				send_report_keyboard(rs->report_id, rd);
+				break;
+
+			case REPORT_ID_BOOT_MOUSE:
+				send_report_boot_mouse(rs->report_id, rd);
 				break;
 
 			default:
@@ -805,22 +848,30 @@ static void report_send(u8_t report_id, bool check_state, bool send_always)
 				break;
 			}
 
+			__ASSERT_NO_MSG(rs->cnt < UINT8_MAX);
 			rs->cnt++;
+			rs->subscriber->report_cnt++;
+			report_sent = true;
 
 			/* To make sure report is sampled on every connection
 			 * event, add one additional report to the pipeline.
 			 */
 		}
 
-		if (rs->cnt == 0) {
-			rs->state = STATE_CONNECTED_IDLE;
-		} else {
+		if (rs->cnt != 0) {
 			rs->state = STATE_CONNECTED_BUSY;
 		}
 	}
+
+	/* Ensure that report marked as send_always will be sent. */
+	if (send_always && !report_sent) {
+		rd->update_needed = true;
+	}
+
+	return report_sent;
 }
 
-static void report_issued(const void *subscriber_id, u8_t report_id, bool error)
+static void report_issued(const void *subscriber_id, uint8_t report_id, bool error)
 {
 	struct subscriber *subscriber = get_subscriber(subscriber_id);
 
@@ -829,54 +880,104 @@ static void report_issued(const void *subscriber_id, u8_t report_id, bool error)
 		return;
 	}
 
-	size_t pos = report_index[report_id];
-	__ASSERT_NO_MSG(pos < INPUT_REPORT_COUNT);
+	bool subscriber_unblocked =
+		(subscriber->report_cnt == subscriber->report_max);
+	subscriber->report_cnt--;
 
-	struct report_state *rs = &subscriber->state[pos];
+	struct report_state *rs = get_report_state(subscriber, report_id);
+	__ASSERT_NO_MSG(rs);
 
-	if (rs->state == STATE_DISCONNECTED) {
-		return;
-	}
+	if (rs->state != STATE_DISCONNECTED) {
+		__ASSERT_NO_MSG(rs->cnt > 0);
+		rs->cnt--;
 
-	__ASSERT_NO_MSG(rs->cnt > 0);
-	rs->cnt--;
-
-	if (state.selected != subscriber) {
-		LOG_INF("Subscriber %p not active", subscriber_id);
 		if (rs->cnt == 0) {
 			rs->state = STATE_CONNECTED_IDLE;
 		}
-		return;
+
+		if (error &&
+		    (rs->linked_rd->linked_rs == rs)) {
+			/* To maintain the sanity of HID state, clear
+			 * all recorded events and items.
+			 */
+			LOG_ERR("Error while sending report");
+
+			clear_report_data(rs->linked_rd);
+
+			return;
+		}
 	}
 
-	struct report_data *rd = &state.report_data[pos];
+	/* Pick next report to send. */
+	struct report_state *next_rs;
 
-	if (error) {
-		/* To maintain the sanity of HID state, clear
-		 * all recorded events and items.
+	if (!subscriber_unblocked) {
+		next_rs = rs;
+	} else {
+		/* Subscriber was blocked. Let's see if there are some other
+		 * reports waiting to be sent.
 		 */
-		LOG_ERR("Error while sending report");
-		clear_items(&rd->items);
-		eventq_reset(&rd->eventq);
-		if (report_id == REPORT_ID_MOUSE) {
-			state.last_dx = 0;
-			state.last_dy = 0;
-			state.wheel_acc = 0;
+		next_rs = rs + 1;
+		if (next_rs == &subscriber->state[ARRAY_SIZE(subscriber->state)]) {
+			next_rs = &subscriber->state[0];
 		}
-
-		if (rs->cnt == 0) {
-			rs->state = STATE_CONNECTED_IDLE;
-		}
-
-		return;
 	}
 
-	if (rs->cnt == 0) {
-		report_send(report_id, false, false);
+	while (true) {
+		if ((next_rs->state != STATE_DISCONNECTED) &&
+		    (next_rs->linked_rd->linked_rs == next_rs) &&
+		    (next_rs->cnt == 0)) {
+			if (report_send(next_rs->linked_rd, false, false)) {
+				break;
+			}
+		}
+
+		if (next_rs == rs) {
+			/* No report has data to be sent. */
+			break;
+		}
+
+		next_rs = next_rs + 1;
+		if (next_rs == &subscriber->state[ARRAY_SIZE(subscriber->state)]) {
+			next_rs = &subscriber->state[0];
+		}
 	}
 }
 
-static void connect(const void *subscriber_id, u8_t report_id)
+static int8_t get_subscriber_priority(const struct subscriber *sub)
+{
+	return (sub->is_usb) ? (1) : (0);
+}
+
+static struct report_state *find_next_report_state(const struct report_data *rd)
+{
+	struct report_state *rs_result = NULL;
+	int8_t sub_prio_result = -1;
+
+	for (size_t i = 0; i < ARRAY_SIZE(state.subscriber); i++) {
+		if (!state.subscriber[i].id) {
+			continue;
+		}
+
+		struct subscriber *sub = &state.subscriber[i];
+		int8_t sub_prio = get_subscriber_priority(sub);
+
+		for (size_t j = 0; j < ARRAY_SIZE(sub->state); j++) {
+			struct report_state *rs = &sub->state[j];
+
+			if ((rs->linked_rd == rd) &&
+			    (sub_prio_result <= sub_prio)) {
+				__ASSERT_NO_MSG(sub_prio_result != sub_prio);
+				rs_result = rs;
+				sub_prio_result = sub_prio;
+			}
+		}
+	}
+
+	return rs_result;
+}
+
+static void connect(const void *subscriber_id, uint8_t report_id)
 {
 	struct subscriber *subscriber = get_subscriber(subscriber_id);
 
@@ -885,38 +986,60 @@ static void connect(const void *subscriber_id, u8_t report_id)
 		return;
 	}
 
-	size_t pos = report_index[report_id];
-	__ASSERT_NO_MSG(pos < INPUT_REPORT_COUNT);
+	struct report_state *rs = get_report_state(subscriber, report_id);
+	__ASSERT_NO_MSG(rs);
 
-	subscriber->state[pos].state = STATE_CONNECTED_IDLE;
+	rs->subscriber = subscriber;
+	rs->state = STATE_CONNECTED_IDLE;
+	rs->report_id = report_id;
 
-	if (state.selected == subscriber) {
-		switch (report_id) {
-		case REPORT_ID_MOUSE:
-			state.last_dx   = 0;
-			state.last_dy   = 0;
-			state.wheel_acc = 0;
-			break;
-		case REPORT_ID_KEYBOARD_KEYS:
-		case REPORT_ID_SYSTEM_CTRL:
-		case REPORT_ID_CONSUMER_CTRL:
-			break;
-		default:
-			break;
+	/* Connect with apriopriete report data. */
+	uint8_t report_data_id = report_id;
+	switch (report_id) {
+	case REPORT_ID_BOOT_MOUSE:
+		report_data_id = REPORT_ID_MOUSE;
+		break;
+	case REPORT_ID_BOOT_KEYBOARD:
+		report_data_id = REPORT_ID_KEYBOARD_KEYS;
+		break;
+	default:
+		/* Use the same report id. */
+		break;
+	}
+
+	struct report_data *rd = get_report_data(report_data_id);
+
+	rs->linked_rd = rd;
+
+	if (rd->linked_rs) {
+		__ASSERT_NO_MSG(rd->linked_rs != rs);
+
+		int8_t cur_sub_prio = get_subscriber_priority(rd->linked_rs->subscriber);
+		int8_t new_sub_prio = get_subscriber_priority(subscriber);
+
+		__ASSERT_NO_MSG(cur_sub_prio != new_sub_prio);
+		if (cur_sub_prio < new_sub_prio) {
+			LOG_WRN("Force report data unlink");
+			rd->linked_rs = NULL;
+			clear_report_data(rd);
 		}
+	}
 
-		struct report_data *rd = &state.report_data[pos];
+	if (!rd->linked_rs) {
+		rd->linked_rs = rs;
 
 		if (!eventq_is_empty(&rd->eventq)) {
 			/* Remove all stale events from the queue. */
-			eventq_cleanup(&rd->eventq, K_MSEC(k_uptime_get()));
+			eventq_cleanup(&rd->eventq, k_uptime_get_32());
 		}
 
-		report_send(report_id, false, true);
+		clear_axes(&rd->axes);
+
+		report_send(rd, false, true);
 	}
 }
 
-static void disconnect(const void *subscriber_id, u8_t report_id)
+static void disconnect(const void *subscriber_id, uint8_t report_id)
 {
 	struct subscriber *subscriber = get_subscriber(subscriber_id);
 
@@ -925,24 +1048,96 @@ static void disconnect(const void *subscriber_id, u8_t report_id)
 		return;
 	}
 
-	size_t pos = report_index[report_id];
-	__ASSERT_NO_MSG(pos < INPUT_REPORT_COUNT);
+	struct report_state *rs = get_report_state(subscriber, report_id);
+	__ASSERT_NO_MSG(rs);
 
-	subscriber->state[pos].state = STATE_DISCONNECTED;
-	subscriber->state[pos].cnt = 0;
+	rs->subscriber = NULL;
+	rs->state = STATE_DISCONNECTED;
+	rs->cnt = 0;
 
-	struct report_data *rd = &state.report_data[pos];
+	struct report_data *rd = rs->linked_rd;
 
-	LOG_INF("Clear report data (0x%x)", report_id);
-	clear_items(&rd->items);
-	eventq_reset(&rd->eventq);
+	rs->linked_rd = NULL;
+
+	if (rd->linked_rs == rs) {
+		clear_report_data(rd);
+		rd->linked_rs = find_next_report_state(rd);
+		__ASSERT_NO_MSG(rd->linked_rs != rs);
+
+		if (rd->linked_rs) {
+			/* Refresh state of the newly routed subscriber. */
+			report_send(rd, true, true);
+		}
+	}
+}
+
+static void connect_subscriber(const void *subscriber_id, bool is_usb, uint8_t report_max)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(state.subscriber); i++) {
+		if (!state.subscriber[i].id) {
+			state.subscriber[i].id = subscriber_id;
+			state.subscriber[i].is_usb = is_usb;
+			state.subscriber[i].report_max = report_max;
+			state.subscriber[i].report_cnt = 0;
+			LOG_INF("Subscriber %p connected", subscriber_id);
+			return;
+		}
+	}
+	LOG_WRN("Cannot connect subscriber");
+	/* Should not happen. */
+	__ASSERT_NO_MSG(false);
+}
+
+static void disconnect_subscriber(const void *subscriber_id)
+{
+	struct subscriber *s = NULL;
+
+	for (size_t i = 0; i < ARRAY_SIZE(state.subscriber); i++) {
+		if (subscriber_id == state.subscriber[i].id) {
+			s = &state.subscriber[i];
+			break;
+		}
+	}
+
+	if (s == NULL) {
+		LOG_WRN("Subscriber %p was not connected", subscriber_id);
+		return;
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(s->state); i++) {
+		struct report_state *rs = &s->state[i];
+
+		/* Disconnect report data from report state. */
+		if (rs->linked_rd) {
+			struct report_data *rd = rs->linked_rd;
+
+			__ASSERT_NO_MSG((rs->report_id > 0) &&
+					(rs->report_id < REPORT_ID_COUNT));
+			if (rd->linked_rs == rs) {
+				clear_report_data(rd);
+				rs->linked_rd = NULL;
+
+				rd->linked_rs = find_next_report_state(rd);
+				__ASSERT_NO_MSG(rd->linked_rs != rs);
+
+				if (rd->linked_rs) {
+					/* Refresh state of the newly routed subscriber. */
+					report_send(rd, true, true);
+				}
+			}
+		}
+	}
+
+	memset(s, 0, sizeof(*s));
+
+	LOG_INF("Subscriber %p disconnected", subscriber_id);
 }
 
 /**@brief Enqueue event that updates a given usage. */
-static void enqueue(struct report_data *rd, u16_t usage_id, s16_t value,
+static void enqueue(struct report_data *rd, uint16_t usage_id, int16_t value,
 		    bool connected)
 {
-	eventq_cleanup(&rd->eventq, K_MSEC(k_uptime_get()));
+	eventq_cleanup(&rd->eventq, k_uptime_get_32());
 
 	if (eventq_is_full(&rd->eventq)) {
 		if (!connected) {
@@ -956,7 +1151,7 @@ static void enqueue(struct report_data *rd, u16_t usage_id, s16_t value,
 				/* Initial cleanup was done above. Queue will
 				 * not contain events with expired timestamp.
 				 */
-				u32_t timestamp =
+				uint32_t timestamp =
 					CONTAINER_OF(i,
 						     struct item_event,
 						     node)->timestamp +
@@ -979,8 +1174,7 @@ static void enqueue(struct report_data *rd, u16_t usage_id, s16_t value,
 			 * all recorded events and items.
 			 */
 			LOG_WRN("Queue is full, all events are dropped!");
-			clear_items(&rd->items);
-			eventq_reset(&rd->eventq);
+			clear_report_data(rd);
 		}
 	}
 
@@ -988,16 +1182,18 @@ static void enqueue(struct report_data *rd, u16_t usage_id, s16_t value,
 }
 
 /**@brief Function for updating the value linked to the HID usage. */
-static void update_key(const struct hid_keymap *map, s16_t value)
+static void update_key(const struct hid_keymap *map, int16_t value)
 {
-	u8_t report_id = map->report_id;
+	uint8_t report_id = map->report_id;
 
-	size_t pos = report_index[report_id];
-	__ASSERT_NO_MSG(pos < INPUT_REPORT_COUNT);
+	struct report_data *rd = get_report_data(report_id);
+	struct report_state *rs = rd->linked_rs;
 
-	struct report_data *rd = &state.report_data[pos];
-	bool connected = state.selected &&
-		(state.selected->state[pos].state != STATE_DISCONNECTED);
+	bool connected = false;
+
+	if (rs) {
+		connected = (rs->state != STATE_DISCONNECTED);
+	}
 
 	if (!connected || !eventq_is_empty(&rd->eventq)) {
 		/* Report cannot be sent yet - enqueue this HID event. */
@@ -1005,7 +1201,8 @@ static void update_key(const struct hid_keymap *map, s16_t value)
 	} else {
 		/* Update state and issue report generation event. */
 		if (key_value_set(&rd->items, map->usage_id, value)) {
-			report_send(report_id, false, true);
+			rd->update_needed = true;
+			report_send(rd, false, true);
 		}
 	}
 }
@@ -1027,50 +1224,97 @@ static void init(void)
 	}
 
 	/* Mark unused report IDs. */
-	for (size_t i = 0; i < ARRAY_SIZE(report_index); i++) {
-		report_index[i] = INPUT_REPORT_COUNT;
+	for (size_t i = 0; i < ARRAY_SIZE(report_data_index); i++) {
+		report_data_index[i] = INPUT_REPORT_DATA_COUNT;
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(report_state_index); i++) {
+		report_state_index[i] = INPUT_REPORT_STATE_COUNT;
 	}
 
-	size_t id = 0;
+	size_t data_id = 0;
+	size_t state_id = 0;
 
 	if (IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_MOUSE_SUPPORT)) {
-		report_index[REPORT_ID_MOUSE] = id;
-		state.report_data[id].items.item_count_max = MOUSE_REPORT_BUTTON_COUNT_MAX;
-		id++;
+		report_data_index[REPORT_ID_MOUSE] = data_id;
+		report_state_index[REPORT_ID_MOUSE] = state_id;
+
+		state.report_data[data_id].items.item_count_max = MOUSE_REPORT_BUTTON_COUNT_MAX;
+		state.report_data[data_id].axes.axis_count = MOUSE_REPORT_AXIS_COUNT;
+
+		data_id++;
+		state_id++;
 	}
 	if (IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_KEYBOARD_SUPPORT)) {
-		report_index[REPORT_ID_KEYBOARD_KEYS] = id;
-		state.report_data[id].items.item_count_max = KEYBOARD_REPORT_KEY_COUNT_MAX;
-		id++;
+		report_data_index[REPORT_ID_KEYBOARD_KEYS] = data_id;
+		report_state_index[REPORT_ID_KEYBOARD_KEYS] = state_id;
+
+		state.report_data[data_id].items.item_count_max = KEYBOARD_REPORT_KEY_COUNT_MAX;
+
+		data_id++;
+		state_id++;
 	}
 	if (IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_SYSTEM_CTRL_SUPPORT)) {
-		report_index[REPORT_ID_SYSTEM_CTRL] = id;
-		state.report_data[id].items.item_count_max = SYSTEM_CTRL_REPORT_KEY_COUNT_MAX;
-		id++;
+		report_data_index[REPORT_ID_SYSTEM_CTRL] = data_id;
+		report_state_index[REPORT_ID_SYSTEM_CTRL] = state_id;
+
+		state.report_data[data_id].items.item_count_max = SYSTEM_CTRL_REPORT_KEY_COUNT_MAX;
+
+		data_id++;
+		state_id++;
 	}
 	if (IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_CONSUMER_CTRL_SUPPORT)) {
-		report_index[REPORT_ID_CONSUMER_CTRL] = id;
-		state.report_data[id].items.item_count_max = CONSUMER_CTRL_REPORT_KEY_COUNT_MAX;
-		id++;
+		report_data_index[REPORT_ID_CONSUMER_CTRL] = data_id;
+		report_state_index[REPORT_ID_CONSUMER_CTRL] = state_id;
+
+		state.report_data[data_id].items.item_count_max = CONSUMER_CTRL_REPORT_KEY_COUNT_MAX;
+
+		data_id++;
+		state_id++;
 	}
+	if (IS_ENABLED(CONFIG_DESKTOP_HID_BOOT_INTERFACE_MOUSE)) {
+		report_state_index[REPORT_ID_BOOT_MOUSE] = state_id;
+
+		state_id++;
+	}
+	if (IS_ENABLED(CONFIG_DESKTOP_HID_BOOT_INTERFACE_KEYBOARD)) {
+		report_state_index[REPORT_ID_BOOT_KEYBOARD] = state_id;
+
+		state_id++;
+	}
+
+	__ASSERT_NO_MSG(data_id == INPUT_REPORT_DATA_COUNT);
+	__ASSERT_NO_MSG(state_id == INPUT_REPORT_STATE_COUNT);
 }
 
 static bool handle_motion_event(const struct motion_event *event)
 {
-	/* Do not accumulate mouse motion data */
-	state.last_dx = event->dx;
-	state.last_dy = event->dy;
+	if (!IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_MOUSE_SUPPORT)) {
+		return false;
+	}
 
-	report_send(REPORT_ID_MOUSE, true, true);
+	struct report_data *rd = get_report_data(REPORT_ID_MOUSE);
+
+	rd->axes.axis[MOUSE_REPORT_AXIS_X] += event->dx;
+	rd->axes.axis[MOUSE_REPORT_AXIS_Y] += event->dy;
+	rd->update_needed = true;
+
+	report_send(rd, true, true);
 
 	return false;
 }
 
 static bool handle_wheel_event(const struct wheel_event *event)
 {
-	state.wheel_acc += event->wheel;
+	if (!IS_ENABLED(CONFIG_DESKTOP_HID_REPORT_MOUSE_SUPPORT)) {
+		return false;
+	}
 
-	report_send(REPORT_ID_MOUSE, true, true);
+	struct report_data *rd = get_report_data(REPORT_ID_MOUSE);
+
+	rd->axes.axis[MOUSE_REPORT_AXIS_WHEEL] += event->wheel;
+	rd->update_needed = true;
+
+	report_send(rd, true, true);
 
 	return false;
 }
@@ -1084,7 +1328,7 @@ static bool handle_button_event(const struct button_event *event)
 		LOG_WRN("No mapping, button ignored");
 	} else {
 		/* Keydown increases ref counter, keyup decreases it. */
-		s16_t value = (event->pressed != false) ? (1) : (-1);
+		int16_t value = (event->pressed != false) ? (1) : (-1);
 		update_key(map, value);
 	}
 
@@ -1115,18 +1359,12 @@ static bool handle_ble_peer_event(const struct ble_peer_event *event)
 {
 	switch (event->state) {
 	case PEER_STATE_CONNECTED:
-		connect_subscriber(event->id, false);
+		connect_subscriber(event->id, false, UINT8_MAX);
 		break;
 
+	case PEER_STATE_DISCONNECTING:
 	case PEER_STATE_DISCONNECTED:
 		disconnect_subscriber(event->id);
-
-		/* Refresh state of newly routed subscriber if any. */
-		for (u8_t r_id = 0; r_id < REPORT_ID_COUNT; r_id++) {
-			if (report_index[r_id] != INPUT_REPORT_COUNT) {
-				report_send(r_id, true, true);
-			}
-		}
 		break;
 
 	case PEER_STATE_SECURED:
@@ -1142,29 +1380,12 @@ static bool handle_ble_peer_event(const struct ble_peer_event *event)
 	return false;
 }
 
-static bool handle_usb_state_event(const struct usb_state_event *event)
+static bool handle_usb_hid_event(const struct usb_hid_event *event)
 {
-	switch (event->state) {
-	case USB_STATE_ACTIVE:
-		if (!get_subscriber_by_type(true)) {
-			connect_subscriber(event->id, true);
-		}
-		break;
-
-	case USB_STATE_DISCONNECTED:
+	if (event->enabled) {
+		connect_subscriber(event->id, true, 1);
+	} else {
 		disconnect_subscriber(event->id);
-
-		/* Refresh state of newly routed subscriber if any. */
-		for (u8_t r_id = 0; r_id < REPORT_ID_COUNT; r_id++) {
-			if (report_index[r_id] != INPUT_REPORT_COUNT) {
-				report_send(r_id, true, true);
-			}
-		}
-		break;
-
-	default:
-		/* Ignore */
-		break;
 	}
 
 	return false;
@@ -1202,7 +1423,7 @@ static bool event_handler(const struct event_header *eh)
 		return handle_wheel_event(cast_wheel_event(eh));
 	}
 
-	if (!IS_ENABLED(CONFIG_DESKTOP_BUTTONS_NONE) &&
+	if (IS_ENABLED(CONFIG_CAF_BUTTON_EVENTS) &&
 	    is_button_event(eh)) {
 		return handle_button_event(cast_button_event(eh));
 	}
@@ -1217,8 +1438,8 @@ static bool event_handler(const struct event_header *eh)
 	}
 
 	if (IS_ENABLED(CONFIG_DESKTOP_USB_ENABLE) &&
-	    is_usb_state_event(eh)) {
-		return handle_usb_state_event(cast_usb_state_event(eh));
+	    is_usb_hid_event(eh)) {
+		return handle_usb_hid_event(cast_usb_hid_event(eh));
 	}
 
 	if (is_module_state_event(eh)) {
@@ -1233,7 +1454,7 @@ static bool event_handler(const struct event_header *eh)
 
 EVENT_LISTENER(MODULE, event_handler);
 EVENT_SUBSCRIBE(MODULE, ble_peer_event);
-EVENT_SUBSCRIBE(MODULE, usb_state_event);
+EVENT_SUBSCRIBE(MODULE, usb_hid_event);
 EVENT_SUBSCRIBE(MODULE, hid_report_sent_event);
 EVENT_SUBSCRIBE(MODULE, hid_report_subscription_event);
 EVENT_SUBSCRIBE(MODULE, module_state_event);

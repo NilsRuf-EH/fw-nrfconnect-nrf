@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2019 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 #include <zephyr.h>
@@ -36,10 +36,10 @@ struct nmos_config {
 	} mode;
 };
 
-static struct device *gpio_dev;
-static struct device *pwm_dev;
+static const struct device *gpio_dev;
+static const struct device *pwm_dev;
 
-static u32_t current_period_us;
+static uint32_t current_period_us;
 
 static struct nmos_config nmos_pins[] = {
 	[UI_NMOS_1] = NMOS_CONFIG(CONFIG_UI_NMOS_1_PIN),
@@ -48,7 +48,7 @@ static struct nmos_config nmos_pins[] = {
 	[UI_NMOS_4] = NMOS_CONFIG(CONFIG_UI_NMOS_4_PIN),
 };
 
-static int pwm_out(u32_t pin, u32_t period_us, u32_t duty_cycle_us)
+static int pwm_out(uint32_t pin, uint32_t period_us, uint32_t duty_cycle_us)
 {
 
 	/* Applying workaround due to limitations in PWM driver that doesn't
@@ -57,8 +57,7 @@ static int pwm_out(u32_t pin, u32_t period_us, u32_t duty_cycle_us)
 	 */
 	if (current_period_us != period_us) {
 		pwm_pin_set_usec(pwm_dev, pin, current_period_us, 0, 0);
-		k_sleep(MAX(K_MSEC(current_period_us / USEC_PER_MSEC),
-			    K_MSEC(1)));
+		k_sleep(K_MSEC(MAX((current_period_us / USEC_PER_MSEC), 1)));
 	}
 
 	current_period_us = period_us;
@@ -66,7 +65,7 @@ static int pwm_out(u32_t pin, u32_t period_us, u32_t duty_cycle_us)
 	return pwm_pin_set_usec(pwm_dev, pin, period_us, duty_cycle_us, 0);
 }
 
-#ifdef CONFIG_DEVICE_POWER_MANAGEMENT
+#ifdef CONFIG_PM_DEVICE
 static bool pwm_is_in_use(void)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(nmos_pins); i++) {
@@ -77,26 +76,26 @@ static bool pwm_is_in_use(void)
 
 	return false;
 }
-#endif /* CONFIG_DEVICE_POWER_MANAGEMENT */
+#endif /* CONFIG_PM_DEVICE */
 
-static void nmos_pwm_disable(u32_t nmos_idx)
+static void nmos_pwm_disable(uint32_t nmos_idx)
 {
 	pwm_out(nmos_pins[nmos_idx].pin, current_period_us, 0);
 
 	nmos_pins[nmos_idx].mode = NMOS_MODE_GPIO;
 
-#ifdef CONFIG_DEVICE_POWER_MANAGEMENT
+#ifdef CONFIG_PM_DEVICE
 	if (pwm_is_in_use()) {
 		return;
 	}
 
-	int err = device_set_power_state(pwm_dev,
-					 DEVICE_PM_SUSPEND_STATE,
-					 NULL, NULL);
+	int err = pm_device_state_set(pwm_dev,
+				      PM_DEVICE_STATE_SUSPEND,
+				      NULL, NULL);
 	if (err) {
 		LOG_WRN("PWM disable failed");
 	}
-#endif /* CONFIG_DEVICE_POWER_MANAGEMENT */
+#endif /* CONFIG_PM_DEVICE */
 }
 
 static int nmos_pwm_enable(size_t nmos_idx)
@@ -105,37 +104,37 @@ static int nmos_pwm_enable(size_t nmos_idx)
 
 	nmos_pins[nmos_idx].mode = NMOS_MODE_PWM;
 
-#ifdef CONFIG_DEVICE_POWER_MANAGEMENT
-	u32_t power_state;
+#ifdef CONFIG_PM_DEVICE
+	uint32_t power_state;
 
-	device_get_power_state(pwm_dev, &power_state);
+	pm_device_state_get(pwm_dev, &power_state);
 
-	if (power_state == DEVICE_PM_ACTIVE_STATE) {
+	if (power_state == PM_DEVICE_STATE_ACTIVE) {
 		return 0;
 	}
 
-	err = device_set_power_state(pwm_dev,
-					 DEVICE_PM_ACTIVE_STATE,
-					 NULL, NULL);
+	err = pm_device_state_set(pwm_dev,
+				  PM_DEVICE_STATE_ACTIVE,
+				  NULL, NULL);
 	if (err) {
 		LOG_ERR("PWM enable failed");
 		return err;
 	}
-#endif /* CONFIG_DEVICE_POWER_MANAGEMENT */
+#endif /* CONFIG_PM_DEVICE */
 
 	return err;
 }
 
-static int configure_gpio(u32_t pin)
+static int configure_gpio(uint32_t pin)
 {
 	int err;
 
-	err = gpio_pin_configure(gpio_dev, pin, GPIO_DIR_OUT);
+	err = gpio_pin_configure(gpio_dev, pin, GPIO_OUTPUT);
 	if (err) {
 		return err;
 	}
 
-	err = gpio_pin_write(gpio_dev, pin, 0);
+	err = gpio_pin_set_raw(gpio_dev, pin, 0);
 	if (err) {
 		return err;
 	}
@@ -164,10 +163,10 @@ int ui_nmos_init(void)
 {
 	int err = 0;
 
-	gpio_dev = device_get_binding(DT_NORDIC_NRF_GPIO_GPIO_0_LABEL);
+	gpio_dev = device_get_binding(DT_LABEL(DT_NODELABEL(gpio0)));
 	if (!gpio_dev) {
 		LOG_ERR("Could not bind to device %s",
-			log_strdup(DT_NORDIC_NRF_GPIO_GPIO_0_LABEL));
+			log_strdup(DT_LABEL(DT_NODELABEL(gpio0))));
 		return -ENODEV;
 	}
 
@@ -205,7 +204,7 @@ int ui_nmos_init(void)
 	return err;
 }
 
-int ui_nmos_pwm_set(size_t nmos_idx, u32_t period, u32_t pulse)
+int ui_nmos_pwm_set(size_t nmos_idx, uint32_t period, uint32_t pulse)
 {
 	if ((pulse > period) || (period == 0)) {
 		LOG_ERR("Period has to be non-zero and period >= duty cycle");
@@ -230,7 +229,7 @@ int ui_nmos_pwm_set(size_t nmos_idx, u32_t period, u32_t pulse)
 	return pwm_out(nmos_pins[nmos_idx].pin, period, pulse);
 }
 
-int ui_nmos_write(size_t nmos_idx, u8_t value)
+int ui_nmos_write(size_t nmos_idx, uint8_t value)
 {
 	int err;
 
@@ -244,7 +243,7 @@ int ui_nmos_write(size_t nmos_idx, u8_t value)
 
 	value = (value == 0) ? 0 : 1;
 
-	err = gpio_pin_write(gpio_dev, nmos_pins[nmos_idx].pin, value);
+	err = gpio_pin_set_raw(gpio_dev, nmos_pins[nmos_idx].pin, value);
 	if (err) {
 		LOG_ERR("Setting GPIO state failed, error: %d", err);
 		return err;

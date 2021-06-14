@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2019 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 #include <stdio.h>
@@ -68,6 +68,75 @@ static size_t nonce_len;
 static size_t input_len;
 static size_t output_len;
 
+void aead_clear_buffers(void);
+void unhexify_aead(void);
+
+static void aead_ccm_setup(void)
+{
+	aead_clear_buffers();
+
+	static int i;
+	p_test_vector =
+		ITEM_GET(test_vector_aead_ccm_data, test_vector_aead_t, i++);
+
+	unhexify_aead();
+}
+
+static void aead_gcm_setup(void)
+{
+	aead_clear_buffers();
+
+	static int i;
+	p_test_vector =
+		ITEM_GET(test_vector_aead_gcm_data, test_vector_aead_t, i++);
+
+	unhexify_aead();
+}
+
+static void aead_chachapoly_setup(void)
+{
+	aead_clear_buffers();
+
+	static int i;
+	p_test_vector = ITEM_GET(test_vector_aead_chachapoly_data,
+				 test_vector_aead_t, i++);
+
+	unhexify_aead();
+}
+
+static void aead_ccm_setup_simple(void)
+{
+	aead_clear_buffers();
+
+	static int i;
+	p_test_vector = ITEM_GET(test_vector_aead_ccm_simple_data,
+				 test_vector_aead_t, i++);
+
+	unhexify_aead();
+}
+
+static void aead_gcm_setup_simple(void)
+{
+	aead_clear_buffers();
+
+	static int i;
+	p_test_vector = ITEM_GET(test_vector_aead_gcm_simple_data,
+				 test_vector_aead_t, i++);
+
+	unhexify_aead();
+}
+
+static void aead_chachapoly_setup_simple(void)
+{
+	aead_clear_buffers();
+
+	static int i;
+	p_test_vector = ITEM_GET(test_vector_aead_chachapoly_simple_data,
+				 test_vector_aead_t, i++);
+
+	unhexify_aead();
+}
+
 void aead_clear_buffers(void)
 {
 	memset(m_aead_input_buf, 0xFF, sizeof(m_aead_input_buf));
@@ -86,114 +155,44 @@ __attribute__((noinline)) void unhexify_aead(void)
 	bool encrypt =
 		(p_test_vector->direction == MBEDTLS_ENCRYPT) && g_encrypt;
 
-	key_len = hex2bin(p_test_vector->p_key, strlen(p_test_vector->p_key),
-			  m_aead_key_buf, strlen(p_test_vector->p_key));
-	mac_len =
-		hex2bin(p_test_vector->p_mac, strlen(p_test_vector->p_mac),
-			m_aead_expected_mac_buf, strlen(p_test_vector->p_mac));
-	ad_len = hex2bin(p_test_vector->p_ad, strlen(p_test_vector->p_ad),
-			 m_aead_ad_buf, strlen(p_test_vector->p_ad));
-	nonce_len =
-		hex2bin(p_test_vector->p_nonce, strlen(p_test_vector->p_nonce),
-			m_aead_nonce_buf, strlen(p_test_vector->p_nonce));
+	key_len = hex2bin_safe(p_test_vector->p_key,
+			       m_aead_key_buf,
+			       sizeof(m_aead_key_buf));
+	mac_len = hex2bin_safe(p_test_vector->p_mac,
+			       m_aead_expected_mac_buf,
+			       sizeof(m_aead_expected_mac_buf));
+	ad_len = hex2bin_safe(p_test_vector->p_ad,
+			      m_aead_ad_buf,
+			      sizeof(m_aead_ad_buf));
+	nonce_len = hex2bin_safe(p_test_vector->p_nonce,
+				 m_aead_nonce_buf,
+				 sizeof(m_aead_nonce_buf));
 
 	/* Fetch and unhexify plaintext and ciphertext for encryption. */
 	if (encrypt) {
-		input_len = hex2bin(p_test_vector->p_plaintext,
-				    strlen(p_test_vector->p_plaintext),
-				    m_aead_input_buf,
-				    strlen(p_test_vector->p_plaintext));
-		output_len = hex2bin(p_test_vector->p_ciphertext,
-				     strlen(p_test_vector->p_ciphertext),
-				     m_aead_expected_output_buf,
-				     strlen(p_test_vector->p_ciphertext));
-		mac_len = hex2bin(p_test_vector->p_mac,
-				  strlen(p_test_vector->p_mac),
-				  m_aead_expected_mac_buf,
-				  strlen(p_test_vector->p_mac));
+		input_len = hex2bin_safe(p_test_vector->p_plaintext,
+					 m_aead_input_buf,
+					 sizeof(m_aead_input_buf));
+		output_len = hex2bin_safe(p_test_vector->p_ciphertext,
+					  m_aead_expected_output_buf,
+					  sizeof(m_aead_expected_output_buf));
+		mac_len = hex2bin_safe(p_test_vector->p_mac,
+				       m_aead_expected_mac_buf,
+				       sizeof(m_aead_expected_mac_buf));
 	} else {
-		input_len = hex2bin(p_test_vector->p_ciphertext,
-				    strlen(p_test_vector->p_ciphertext),
-				    m_aead_input_buf,
-				    strlen(p_test_vector->p_ciphertext));
-		output_len = hex2bin(p_test_vector->p_plaintext,
-				     strlen(p_test_vector->p_plaintext),
-				     m_aead_expected_output_buf,
-				     strlen(p_test_vector->p_plaintext));
-		mac_len = hex2bin(p_test_vector->p_mac,
-				  strlen(p_test_vector->p_mac),
-				  m_aead_output_mac_buf,
-				  strlen(p_test_vector->p_mac));
+		input_len = hex2bin_safe(p_test_vector->p_ciphertext,
+					 m_aead_input_buf,
+					 sizeof(m_aead_input_buf));
+		output_len = hex2bin_safe(p_test_vector->p_plaintext,
+					  m_aead_expected_output_buf,
+					  sizeof(m_aead_expected_output_buf));
+		mac_len = hex2bin_safe(p_test_vector->p_mac,
+				       m_aead_output_mac_buf,
+				       sizeof(m_aead_output_mac_buf));
 	}
 }
 
-void aead_ccm_setup(void)
-{
-	aead_clear_buffers();
-
-	static int i;
-	p_test_vector =
-		ITEM_GET(test_vector_aead_ccm_data, test_vector_aead_t, i++);
-
-	unhexify_aead();
-}
-
-void aead_gcm_setup(void)
-{
-	aead_clear_buffers();
-
-	static int i;
-	p_test_vector =
-		ITEM_GET(test_vector_aead_gcm_data, test_vector_aead_t, i++);
-
-	unhexify_aead();
-}
-
-void aead_chachapoly_setup(void)
-{
-	aead_clear_buffers();
-
-	static int i;
-	p_test_vector = ITEM_GET(test_vector_aead_chachapoly_data,
-				 test_vector_aead_t, i++);
-
-	unhexify_aead();
-}
-
-void aead_ccm_setup_simple(void)
-{
-	aead_clear_buffers();
-
-	static int i;
-	p_test_vector = ITEM_GET(test_vector_aead_ccm_simple_data,
-				 test_vector_aead_t, i++);
-
-	unhexify_aead();
-}
-
-void aead_gcm_setup_simple(void)
-{
-	aead_clear_buffers();
-
-	static int i;
-	p_test_vector = ITEM_GET(test_vector_aead_gcm_simple_data,
-				 test_vector_aead_t, i++);
-
-	unhexify_aead();
-}
-
-void aead_chachapoly_setup_simple(void)
-{
-	aead_clear_buffers();
-
-	static int i;
-	p_test_vector = ITEM_GET(test_vector_aead_chachapoly_simple_data,
-				 test_vector_aead_t, i++);
-
-	unhexify_aead();
-}
-
-#if defined(CONFIG_MBEDTLS_CCM_C)
+#if defined(MBEDTLS_CCM_C)
 void exec_test_case_aead_ccm_star_simple(void)
 {
 	int err_code = -1;
@@ -334,7 +333,7 @@ void exec_test_case_aead(void)
 {
 	int err_code = -1;
 
-#if defined(CONFIG_MBEDTLS_CCM_C)
+#if defined(MBEDTLS_CCM_C)
 	if (p_test_vector->mode == MBEDTLS_MODE_CCM &&
 	    p_test_vector->ccm_star) {
 		exec_test_case_aead_ccm_star();
@@ -438,7 +437,7 @@ void exec_test_case_aead_simple(void)
 {
 	int err_code = -1;
 
-#if defined(CONFIG_MBEDTLS_CCM_C)
+#if defined(MBEDTLS_CCM_C)
 	if (p_test_vector->mode == MBEDTLS_MODE_CCM &&
 	    p_test_vector->ccm_star) {
 		exec_test_case_aead_ccm_star_simple();
@@ -465,6 +464,8 @@ void exec_test_case_aead_simple(void)
 					 p_test_vector->direction);
 	LOG_DBG("Err code setkey: -0x%04X", -err_code);
 	TEST_VECTOR_ASSERT_EQUAL(0, err_code);
+
+	LOG_DBG("Expected err code: -0x%04X", -p_test_vector->expected_err_code);
 
 	size_t operation_len = output_len;
 	start_time_measurement();

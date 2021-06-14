@@ -1,7 +1,7 @@
 #
 # Copyright (c) 2019 Nordic Semiconductor
 #
-# SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
 #
 
 menu "Motion configuration"
@@ -16,17 +16,19 @@ config DESKTOP_MOTION_NONE
 config DESKTOP_MOTION_SENSOR_PMW3360_ENABLE
 	bool "Motion from optical sensor PMW3360"
 	select DESKTOP_MOTION_SENSOR_ENABLE
+	depends on PMW3360
 
 config DESKTOP_MOTION_SENSOR_PAW3212_ENABLE
 	bool "Motion from optical sensor PAW3212"
 	select DESKTOP_MOTION_SENSOR_ENABLE
+	depends on PAW3212
 
 config DESKTOP_MOTION_BUTTONS_ENABLE
 	bool "Motion from buttons"
+	depends on CAF_BUTTON_EVENTS
 
 config DESKTOP_MOTION_SIMULATED_ENABLE
 	bool "Simulated motion"
-	depends on SHELL
 
 endchoice
 

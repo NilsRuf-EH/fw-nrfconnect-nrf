@@ -3,7 +3,11 @@
 Connectivity bridge
 ###################
 
-The Connectivity bridge application demonstrates the bridge functionality for the Thingy:91 hardware and is an enhancement to the :ref:`usb_uart_bridge_sample` sample.
+.. contents::
+   :local:
+   :depth: 2
+
+The Connectivity bridge application demonstrates the bridge functionality for the Thingy:91 hardware.
 
 Additionally, the application also provides an option of adding the bluetooth functionality by making use of the :ref:`nus_service_readme`.
 
@@ -46,11 +50,13 @@ It can be turned on at runtime by setting the appropriate option in the :file:`C
 Requirements
 ************
 
-* One of the following development boards:
+The sample supports the following nRF52840-based device:
 
-  * |Thingy91|
+.. table-from-rows:: /includes/sample_board_rows.txt
+   :header: heading
+   :rows: thingy91_nrf52840
 
-* A USB host which can communicate with CDC ACM devices, such as a Windows or Linux PC
+The sample also requires a USB host which can communicate with CDC ACM devices, such as a Windows or Linux PC.
 
 
 Building and running
@@ -59,15 +65,21 @@ Building and running
 
 .. include:: /includes/build_and_run.txt
 
+Using RSA signing for MCUboot
+=============================
+
+The Connectivity bridge application adds an overlay configuration for MCUboot.
+This configuration enables the RSA signing of the images for backward compatibility with the MCUboot versions that precede the |NCS| v1.4.0.
+The overlay can be found in :file:`child_image/mcuboot.conf`.
 
 Testing
 =======
 
-After programming the sample to your board, test it by performing the following steps:
+After programming the sample to your kit, test it by performing the following steps:
 
-1. Connect the board to the host via a USB cable.
+1. Connect the kit to the host via a USB cable.
 #. Observe that the CDC ACM devices enumerate on the USB host (COM ports on Windows, /dev/tty* on Linux).
-#. Use a serial client on the USB host to communicate over the board's UART pins.
+#. Use a serial client on the USB host to communicate over the kit's UART pins.
 
 
 Dependencies
@@ -82,7 +94,7 @@ In addition, it uses the following Zephyr libraries:
 
 * ``include/zephyr/types.h``
 * ``boards/arm/nrf*/board.h``
-* :ref:`zephyr:kernel`:
+* :ref:`zephyr:kernel_api`:
 
   * ``include/kernel.h``
 
@@ -91,7 +103,7 @@ In addition, it uses the following Zephyr libraries:
    * ``include/uart.h``
    * ``include/usb.h``
 
-* :ref:`zephyr:usb_device_stack`
+* :ref:`zephyr:usb_api`
 
 * :ref:`zephyr:bluetooth_api`:
 

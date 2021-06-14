@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2019 Nordic Semiconductor ASA
  *
- * SPDX-License-Identifier: LicenseRef-BSD-5-Clause-Nordic
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
 /**
@@ -36,8 +36,6 @@ extern "C" {
 enum at_param_type {
 	/** Invalid parameter, typically a parameter that does not exist. */
 	AT_PARAM_TYPE_INVALID,
-	/** Parameter of type short. */
-	AT_PARAM_TYPE_NUM_SHORT,
 	/** Parameter of type integer. */
 	AT_PARAM_TYPE_NUM_INT,
 	/** Parameter of type string. */
@@ -51,11 +49,11 @@ enum at_param_type {
 /** @brief Parameter value. */
 union at_param_value {
 	/** Integer value. */
-	u32_t int_val;
+	int64_t int_val;
 	/** String value. */
 	char *str_val;
-	/** Array of u32_t */
-	u32_t *array_val;
+	/** Array of uint32_t */
+	uint32_t *array_val;
 };
 
 /** @brief A parameter is defined with a type, length and value. */
@@ -111,22 +109,6 @@ void at_params_list_clear(struct at_param_list *list);
 void at_params_list_free(struct at_param_list *list);
 
 /**
- * @brief Add a parameter in the list at the specified index and assign it a
- * short value.
- *
- * If a parameter exists at this index, it is replaced.
- *
- * @param[in] list      Parameter list.
- * @param[in] index     Index in the list where to put the parameter.
- * @param[in] value     Parameter value.
- *
- * @retval 0 If the operation was successful.
- *           Otherwise, a (negative) error code is returned.
- */
-int at_params_short_put(const struct at_param_list *list, size_t index,
-			u16_t value);
-
-/**
  * @brief Add a parameter in the list at the specified index and assign it an
  * integer value.
  *
@@ -139,8 +121,7 @@ int at_params_short_put(const struct at_param_list *list, size_t index,
  * @retval 0 If the operation was successful.
  *           Otherwise, a (negative) error code is returned.
  */
-int at_params_int_put(const struct at_param_list *list, size_t index,
-		      u32_t value);
+int at_params_int_put(const struct at_param_list *list, size_t index, int64_t value);
 
 /**
  * @brief Add a parameter in the list at the specified index and assign it a
@@ -165,7 +146,7 @@ int at_params_string_put(const struct at_param_list *list, size_t index,
  * array type value.
  *
  * The parameter array value is copied and added to the list.
- * If a parameter exists at this index, it is replaced. Only numbers (u32_t)
+ * If a parameter exists at this index, it is replaced. Only numbers (uint32_t)
  * are currently supported. If the list contain compound values the parser
  * will try to convert the value. Either 0 will be stored or if the value start
  * with a numeric value that value will be converted, the rest of the value
@@ -180,7 +161,7 @@ int at_params_string_put(const struct at_param_list *list, size_t index,
  *           Otherwise, a (negative) error code is returned.
  */
 int at_params_array_put(const struct at_param_list *list, size_t index,
-			const u32_t *array, size_t array_len);
+			const uint32_t *array, size_t array_len);
 
 /**
  * @brief Add a parameter in the list at the specified index and assign it a
@@ -215,9 +196,6 @@ int at_params_size_get(const struct at_param_list *list, size_t index,
 /**
  * @brief Get a parameter value as a short number.
  *
- * Numeric values are stored as unsigned number. The parameter type must be a
- * short, or an error is returned.
- *
  * @param[in] list    Parameter list.
  * @param[in] index   Parameter index in the list.
  * @param[out] value  Parameter value.
@@ -226,13 +204,23 @@ int at_params_size_get(const struct at_param_list *list, size_t index,
  *           Otherwise, a (negative) error code is returned.
  */
 int at_params_short_get(const struct at_param_list *list, size_t index,
-			u16_t *value);
+			int16_t *value);
+
+/**
+ * @brief Get a parameter value as a unsigned short number.
+ *
+ * @param[in] list    Parameter list.
+ * @param[in] index   Parameter index in the list.
+ * @param[out] value  Parameter value.
+ *
+ * @retval 0 If the operation was successful.
+ *           Otherwise, a (negative) error code is returned.
+ */
+int at_params_unsigned_short_get(const struct at_param_list *list, size_t index,
+			uint16_t *value);
 
 /**
  * @brief Get a parameter value as an integer number.
- *
- * Numeric values are stored as unsigned number. The parameter type must be an
- * integer, or an error is returned.
  *
  * @param[in] list    Parameter list.
  * @param[in] index   Parameter index in the list.
@@ -242,7 +230,31 @@ int at_params_short_get(const struct at_param_list *list, size_t index,
  *           Otherwise, a (negative) error code is returned.
  */
 int at_params_int_get(const struct at_param_list *list, size_t index,
-		      u32_t *value);
+		      int32_t *value);
+
+/**
+ * @brief Get a parameter value as an unsigned integer number.
+ *
+ * @param[in] list    Parameter list.
+ * @param[in] index   Parameter index in the list.
+ * @param[out] value  Parameter value.
+ *
+ * @retval 0 If the operation was successful.
+ *           Otherwise, a (negative) error code is returned.
+ */
+int at_params_unsigned_int_get(const struct at_param_list *list, size_t index, uint32_t *value);
+
+/**
+ * @brief Get a parameter value as an signed 64-bit integer number.
+ *
+ * @param[in] list    Parameter list.
+ * @param[in] index   Parameter index in the list.
+ * @param[out] value  Parameter value.
+ *
+ * @retval 0 If the operation was successful.
+ *           Otherwise, a (negative) error code is returned.
+ */
+int at_params_int64_get(const struct at_param_list *list, size_t index, int64_t *value);
 
 /**
  * @brief Get a parameter value as a string.
@@ -282,7 +294,7 @@ int at_params_string_get(const struct at_param_list *list, size_t index,
  *           Otherwise, a (negative) error code is returned.
  */
 int at_params_array_get(const struct at_param_list *list, size_t index,
-			u32_t *array, size_t *len);
+			uint32_t *array, size_t *len);
 
 /**
  * @brief Get the number of valid parameters in the list.
@@ -291,7 +303,7 @@ int at_params_array_get(const struct at_param_list *list, size_t index,
  *
  * @return The number of valid parameters until an empty parameter is found.
  */
-u32_t at_params_valid_count_get(const struct at_param_list *list);
+uint32_t at_params_valid_count_get(const struct at_param_list *list);
 
 /**
  * @brief Get parameter type for parameter at index
