@@ -296,10 +296,12 @@ static int client_connect(struct download_client *dl, const char *host,
 	}
 
 	/* Set socket timeout, if configured */
-	err = socket_timeout_set(*fd, type);
+	// this function does always return errno 42 "Protocol not available".
+	// do not call it and use default socket timeout settings instead
+	/*err = socket_timeout_set(*fd, type);
 	if (err) {
 		goto cleanup;
-	}
+	}*/
 
 	LOG_INF("Connecting to %s", log_strdup(host));
 	LOG_DBG("fd %d, addrlen %d, fam %s, port %d",
